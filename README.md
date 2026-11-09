@@ -16,13 +16,14 @@ Notes:
 - It doesn't support PCM or disabling the sequencer, not even for the SEGA chant
 
 Roadmap, no particular order:
-- Support smps2asm version 1, as this was based on version 0
 - Make 1UP jingle a per-BGM flag, rather then only being for one ID
 - Move commands outside of the ID queues
 - Time sequencer using YM timers instead of V-int (improves PAL playback)
 - Update samples during the sequencer (improves playback quality)
+- Sample volume control
 - Make sequences not be bound by rom banks
 - Add various features and conveniences, namely from SMPS-Dusted
 - Native Mega CD/32X support
 - DPCM-HQ support, because why not?
 - Consider adding back compressed BGMs
+- Support ASM68K linkable object files

@@ -69,6 +69,7 @@ s2Tone_0D:
 MusID__First	equ $01
 zMasterPlaylist:
 		bgmdef 0,$00,BgmMCZ,bgmid_MCZ
+		bgmdef 0,$00,BgmSYZ,bgmid_SYZ
 		bgmdef 0,$00,BgmExtraLife,bgmid_ExtraLife
 MusID__End	equ MusID__First+(((*)-zMasterPlaylist)/4)
 
@@ -96,6 +97,7 @@ SoundDriverLoad_DataEnd:
 ; ---------------------------------------------------------------------------
 		startBank
 BgmMCZ:		include "res/bgm/MCZ.asm"
+BgmSYZ:		include "res/bgm/SYZ.asm"
 BgmExtraLife:	include "res/bgm/ExtraLife.asm"
 		finishBank
 ; ---------------------------------------------------------------------------
@@ -104,10 +106,12 @@ SoundIndex:
 SndID__First	equ MusID__End
 		sfxdef	$80,SfxJump,sfxid_Jump
 		sfxdef	$80,SfxSpindash,sfxid_Spindash
+		sfxdef	$80,SfxJingle,sfxid_Jingle
 SndID__End	equ SndID__First+(((*)-SoundIndex)/3)
 
 SfxJump:	include "res/sfx/Jump.asm"
 SfxSpindash:	include "res/sfx/Spin Dash Rev.asm"
+SfxJingle:	include "res/sfx/Continue Jingle.asm"
 		finishBank
 ; ---------------------------------------------------------------------------
 		incpcm Kick,"res/pcm/Kick.dpcm"

@@ -525,10 +525,10 @@ CallAPI:
 .rundriver:
 		rts
 .queuesound:
-		move.w	v_soundid,d0
+		move.b	v_soundid,d0
 		jmp	SmpsQueue
 .queuesample:
-		move.w	v_soundid,d0
+		move.b	v_soundid,d0
 		jmp	QueuePCM
 .readcomm:
 		rts
@@ -677,7 +677,7 @@ HandleRender:
 	set .l,3
 		rentext.w ScreenText.apicall,v_apiindex
 		rentext.w ScreenText.shortcut,v_shortcut
-		renhex.w v_soundid
+		renhex.b v_soundid
 		renhex.w v_miscparam
 		renhex.b v_cddaid
 		renhex.b v_commval
@@ -783,7 +783,7 @@ ControlList:
 		dc.w (.e-.s)/8
 .s:		ctrllist.w	v_apiindex,	(CallAPI.lute-CallAPI.lut)/4-1
 		ctrllist.w	v_shortcut,	(CallShortcut.lute-CallShortcut.lut)/4-1
-		ctrllist.w	v_soundid,	$FFFF
+		ctrllist.b	v_soundid,	$FF
 		ctrllist.w	v_miscparam,	$FFFF
 		ctrllist.b	v_cddaid,	(99*2)
 		ctrllist.b	v_commval,	$FF

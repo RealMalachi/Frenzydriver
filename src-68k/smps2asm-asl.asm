@@ -1,7 +1,7 @@
 ; =============================================================================================
 ; Created by Flamewing, based on S1SMPS2ASM version 1.1 by Marc Gordon (AKA Cinossu)
 ; =============================================================================================
-SMPS2ASMVer	equ 0
+SMPS2ASMVer	equ 1
 ; ---------------------------------------------------------------------------------------------
 ; Standard Octave Pitch Equates
 smpsPitch10lo	equ $88
@@ -217,7 +217,7 @@ convertMainTempoMod macro mod
 		if mod=1
 		fatal "Invalid main tempo of 1 in song from Sonic 1"
 		endif
-		dc.b	(256/((((mod=0)&1)*256)|mod))+((256#((((mod=0)&1)*256)|mod))<>0)
+		dc.b	(256/((((mod=0)&1)*256)|mod))+(((256#((((mod=0)&1)*256)|mod))<>0)&1)
 	elseif SourceDriver=2
 		if mod=0
 		fatal "Invalid main tempo of 0 in song from Sonic 2"
@@ -229,18 +229,21 @@ convertMainTempoMod macro mod
 	endm
 ; ---------------------------------------------------------------------------------------------
 ; Header Macros
-smpsHeaderStartSong macro ver, sourcesmps2asmver
+smpsHeaderStartSong macro ver,sourcesmps2asmver
 SourceDriver	set ver
 SourceSMPS2ASM	set sourcesmps2asmver+0
 songStart	set *
 psgdelta	set ((ver<3)&1)*12
+	if SMPS2ASMVer<SourceSMPS2ASM
+	warning "This song was made for SMPS2ASM version $\{SourceSMPS2ASM}, whereas we only support up to version $\{SMPS2ASMVer}"
+	endif
 	endm
 
 smpsHeaderVoiceNull macro
 	if songStart<>*
 	fatal "Missing smpsHeaderStartSong"
 	endif
-	dc.w	$0000
+	dc.b	0,0
 	endm
 
 ; Header - Set up Voice Location
@@ -278,7 +281,7 @@ smpsHeaderDAC macro loc,pitch,vol
 	elseif ARGCOUNT>1
 	dc.b	pitch,$00
 	else
-	dc.w	$00
+	dc.b	0,0
 	endif
 	endm
 
@@ -291,7 +294,11 @@ smpsHeaderFM macro loc,pitch,vol
 ; Header - Set up PSG Channel
 smpsHeaderPSG macro loc,pitch,vol,mod,voice
 	makeSequencePointer loc
+	if SourceDriver<3
+	dc.b	(pitch+psgdelta)&$FF,vol,0,voice
+	else
 	dc.b	(pitch+psgdelta)&$FF,vol,mod,voice
+	endif
 	endm
 
 ; Header macros for SFX (not for music)
@@ -444,10 +451,14 @@ smpsPSGform macro form
 smpsPSGpulse macro
 	dc.b	$F3,0
 	endm
+smpsFMICommand macro reg,val
+	dc.b	$F9,reg,val
+	endm
 
 ; misc
 smpsWeirdD1LRR macro
-	dc.b	$F9
+	smpsFMICommand $88,$0F
+	smpsFMICommand $8C,$0F
 	endm
 smpsSpindashRev macro
 	dc.b	$E4
@@ -482,9 +493,6 @@ smpsSetNote macro val
 	fatal "smpsSetNote isn't supported"
 	endm
 
-smpsFMICommand macro reg,val
-	fatal "smpsFMICommand isn't supported"
-	endm
 smpsFMIICommand macro reg,val
 	fatal "smpsFMICommand isn't supported"
 	endm
@@ -536,9 +544,8 @@ smpsResetSpindashRev macro val
 	endm
 
 ; ---------------------------------------------------------------------------------------------
-; S1/S2 only coordination flag
-; ---------------------------------------------------------------------------------------------
 ; Macros for FM instruments
+; ---------------------------------------------------------------------------------------------
 ; Voices - Feedback
 smpsVcFeedback macro val
 vcFeedback	set val
@@ -587,10 +594,17 @@ vcAR4	set op4
 
 ; Voices - Amplitude Modulation
 smpsVcAmpMod macro op1,op2,op3,op4
-vcAM1	set op1
-vcAM2	set op2
-vcAM3	set op3
-vcAM4	set op4
+	if SourceSMPS2ASM=0
+vcAM1	set op1<<5
+vcAM2	set op2<<5
+vcAM3	set op3<<5
+vcAM4	set op4<<5
+	else
+vcAM1	set op1<<7
+vcAM2	set op2<<7
+vcAM3	set op3<<7
+vcAM4	set op4<<7
+	endif
 	endm
 
 ; Voices - First Decay Rate
@@ -626,10 +640,10 @@ vcRR4	set op4
 	endm
 
 ; Voices - Total Level
-smpsVcTotalLevel macro op1,op2,op3,op4
-	if (SourceDriver<3)|(SourceSMPS2ASM=0)
 ;   0     1     2     3     4     5     6     7
 ;%1000,%1000,%1000,%1000,%1010,%1110,%1110,%1111
+smpsVcTotalLevel macro op1,op2,op3,op4
+	if (SourceDriver<3)|(SourceSMPS2ASM=0)
 vcTL1	set (op1&$7F)|(1<<7)
 vcTL2	set (op2&$7F)|((vcAlgorithm>=5)<<7)
 vcTL3	set (op3&$7F)|((vcAlgorithm>=4)<<7)
@@ -643,7 +657,7 @@ vcTL4	set op4
 	dc.b	(vcUnusedBits<<6)+(vcFeedback<<3)+vcAlgorithm
 	dc.b	(vcDT4<<4)+vcCF4,(vcDT2<<4)+vcCF2,(vcDT3<<4)+vcCF3,(vcDT1<<4)+vcCF1
 	dc.b	(vcRS4<<6)+vcAR4,(vcRS2<<6)+vcAR2,(vcRS3<<6)+vcAR3,(vcRS1<<6)+vcAR1
-	dc.b	(vcAM4<<5)+vcD1R4,(vcAM2<<5)+vcD1R2,(vcAM3<<5)+vcD1R3,(vcAM1<<5)+vcD1R1
+	dc.b	vcAM4+vcD1R4,vcAM2+vcD1R2,vcAM3+vcD1R3,vcAM1+vcD1R1
 	dc.b	vcD2R4,vcD2R2,vcD2R3,vcD2R1
 	dc.b	(vcDL4<<4)+vcRR4,(vcDL2<<4)+vcRR2,(vcDL3<<4)+vcRR3,(vcDL1<<4)+vcRR1
 	dc.b	vcTL4,vcTL2,vcTL3,vcTL1

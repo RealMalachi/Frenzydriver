@@ -13,6 +13,7 @@ Notes:
 - DPCM sample playback is still handicapped from lacking DMA protection and updating during the sequencer
 - SFXs are still limited to only one bank
 - You need to handle ring panning and CPZ ball gloop sound logic outside of the driver. smps-routines has commented code for handling that
+- It doesn't support PCM or disabling the sequencer, not even for the SEGA chant
 
 Roadmap, no particular order:
 - Support smps2asm version 1, as this was based on version 0

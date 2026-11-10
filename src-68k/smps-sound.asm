@@ -8,6 +8,7 @@ SoundDriverLoad_Data:
 		dc.b MusID__First,MusID__End
 		dc.b SndID__First,SndID__End
 		dc.b bgmid_ExtraLife
+		segadef Sega,16500
 zVolEnv:
 		volenvdef s2Tone_01,fTone_01
 		volenvdef s2Tone_02,fTone_02
@@ -121,5 +122,6 @@ SfxJingle:	include "res/sfx/Continue Jingle.asm"
 		incpcm Bongo,"res/pcm/Bongo.dpcm"
 		incpcm Clap,"res/pcm/Clap.dpcm"
 		incpcm Scratch,"res/pcm/Scratch.dpcm"
+		incpcm Sega,"res/pcm/SEGA.pcm"
 ; ---------------------------------------------------------------------------
 	SMPS_even

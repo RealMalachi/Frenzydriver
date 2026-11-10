@@ -40,13 +40,16 @@ SMPS_even macro
 	if smps_assembler=0
 
 zMakeLEW macro x
-	dc.b (\x\&$FF),(\x\>>8)&$FF
+	dc.b (\x)&$FF,((\x)>>8)&$FF
 	endm
 zMakePtr macro x
-	dc.b (\x\&$FF),((\x\>>8)&$7F)|1<<7
+	dc.b (\x)&$FF,(((\x)>>8)&$7F)|1<<7
 	endm
 zMakeBnk macro x
-	dc.b (\x\>>15)
+	dc.b (\x)>>15
+	endm
+zMakeRate macro rate,cycle
+	dc.b  1+(3579545/(\rate\)-(\cycle\)+(13/2))/13
 	endm
 
 bgmdef macro palslowflag,speedtempo,label,id
@@ -60,12 +63,18 @@ sfxdef macro prio,label,id
 	dc.b \prio\
 	zMakePtr \label
 	endm
-pcmdef macro label,samplerate,id
+pcmdef macro label,rate,id
 \id\	equ $81+(((*)-zDACPtrTbl)/6)
 	zMakeBnk SMPSPCM_\label
-	dc.b  1+(3579545/(samplerate)-(smps_pcmcycle)+(13/2))/13
-	zMakeLEW (SMPSPCM_\label\_End-SMPSPCM_\label\)
+	zMakeRate \rate,smps_dpcmcycle
+	zMakeLEW SMPSPCM_\label\_End-SMPSPCM_\label
 	zMakePtr SMPSPCM_\label
+	endm
+segadef macro label,rate
+	zMakeLEW SMPSPCM_\label\_End-SMPSPCM_\label
+	zMakePtr SMPSPCM_\label
+	zMakeBnk SMPSPCM_\label
+	zMakeRate \rate,smps_segacycle
 	endm
 volenvdef macro label,id
 \id\	equ 1+(((*)-zVolEnv)/2)
@@ -131,13 +140,16 @@ finishBank macro
 	else	; smps_assembler
 
 zMakeLEW macro x
-	dc.b (x&$FF),(x>>8)&$FF
+	dc.b (x)&$FF,((x)>>8)&$FF
 	endm
 zMakePtr macro x
-	dc.b (x&$FF),((x>>8)&$7F)|1<<7
+	dc.b (x)&$FF,(((x)>>8)&$7F)|1<<7
 	endm
 zMakeBnk macro x
-	dc.b (x>>15)
+	dc.b (x)>>15
+	endm
+zMakeRate macro rate,cycle
+	dc.b  1+(3579545/(\rate\)-(\cycle\)+(13/2))/13
 	endm
 
 bgmdef macro palslowflag,speedtempo,label,id
@@ -151,12 +163,18 @@ id	equ SndID__First+(((*)-SoundIndex)/3)
 	dc.b prio
 	zMakePtr label
 	endm
-pcmdef macro label,samplerate,id
+pcmdef macro label,rate,id
 id	equ $81+(((*)-zDACPtrTbl)/6)
 	zMakeBnk SMPSPCM_label
-	dc.b  1+(3579545/(samplerate)-(smps_pcmcycle)+(13/2))/13
-	zMakeLEW (SMPSPCM_label_End-SMPSPCM_label)
+	zMakeRate rate,smps_dpcmcycle
+	zMakeLEW SMPSPCM_label_End-SMPSPCM_label
 	zMakePtr SMPSPCM_label
+	endm
+segadef macro label,rate
+	zMakeLEW SMPSPCM_label_End-SMPSPCM_label
+	zMakePtr SMPSPCM_label
+	zMakeBnk SMPSPCM_label
+	zMakeRate rate,smps_segacycle
 	endm
 volenvdef macro label,id
 id	equ 1+(((*)-zVolEnv)/2)

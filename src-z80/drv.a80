@@ -22,7 +22,7 @@ label	equ value
 	export label
 	endm
 ; ---------------------------------------------------------------------------
-		org $0EC0
+		org $0FC0
 playback_resting	equ 1	; 1 (02h): seems to be "track is at rest"
 playback_override	equ 2	; 2 (04h): SFX is overriding this track
 playback_noattack	equ 4	; 4 (10h): do not attack next note
@@ -179,6 +179,10 @@ musid_last	defb
 sfxid_first	defb
 sfxid_last	defb
 musid_1up	defb
+segalen		defw
+segaloc		defw
+segabank	defb
+segarate	defb
 		ENDS
 zDataTable:	zData
 	valfor68k smps_datatable	,zDataTable
@@ -449,8 +453,6 @@ zloc_167:
 ;	pop	af
 ;	ld	b,1
 ;	ei
-dpcmCycleCount = 119
-	valfor68k smps_pcmcycle		,dpcmCycleCount
 zWriteToDAC:
 .start:
 ;	ld	a,2Ah
@@ -491,10 +493,11 @@ zWriteToDAC:
 	inc	(hl)
 	ld	a,(hl)
 	ld	hl,zBankRegister
-	rept 8
+	rept 7
 	ld	(hl),a
 	rrca
 	endr
+	ld	(hl),a
 	ld	(hl),h
 	pop	af
 	ld	hl,zROMWindow
@@ -518,6 +521,7 @@ zWriteToDAC:
 	ld	(zYM2612_D0),a
 	ei
 .wait:	jr	.wait						; wait until pcm is queued (it'll manipulate stack to zWriteToDAC.start)
+	valfor68k smps_dpcmcycle,119
 ; ---------------------------------------------------------------------------
 ; 'jman2050' DAC decode lookup table
 	align 100h
@@ -544,6 +548,68 @@ zSFXTrackOffs:
 	; These are offsets to different sound effect tracks starting with FM3
 	dw	zSFX_FM3,      0000h,  zSFX_FM4,  zSFX_FM5	; FM3, 0, FM4, FM5
 	dw	zSFX_PSG1, zSFX_PSG2, zSFX_PSG3, zSFX_PSG3	; PSG1, PSG2, PSG3, PSG3 (noise alternate)
+; ---------------------------------------------------------------------------
+zPlaySegaChant:
+	di
+	push	ix
+	ld	a,0B6h				; set DAC panning to mono
+	ld	c,0C0h
+	rst	zWriteFMII
+	ld	a,2Bh				; enable DAC
+	ld	c,80h
+	rst	zWriteFMI
+
+	ld	hl,(zDataTable.segaloc)
+	ld	de,(zDataTable.segalen)
+	ld	a,(zDataTable.segarate)
+	ld	c,a
+	ld	a,(zDataTable.segabank)
+	ld	ixh,a
+	call	zBankSwitch
+
+	ld	a,2Ah				; play samples
+	ld	(zYM2612_A0),a
+.loop:
+	ld	a,(hl)				; 7	; Get next PCM byte
+	ld	(zYM2612_D0),a			; 13	; Send to DAC
+	ld	b,c				; 4	; Set delay time
+	djnz	$				; 8	; Delay
+
+	ld	a,(zQueueSlot1)			; 13	; Check if the first queue slot has anything
+	or	a				; 4
+	jr	nz,.stop			; 7	; If it does, stop Sega PCM
+
+	inc	hl				; 6	; Increment pointer
+	bit	7,h				; 8
+	jp	NZ,.inbank			; 10
+	inc	ixh					; 8
+	ld	a,ixh					; 8
+	ld	h,zBankRegister>>8			; 7
+	rept 7
+	ld	(hl),a					; 7
+	rrca						; 4
+	endr
+	ld	(hl),a					; 7
+	ld	(hl),h					; 7
+	ld	h,zROMWindow>>8				; 7
+							; +121
+.inbank:
+	dec	de				; 6	; Decrement timer
+	ld	a,d				; 4	; Check if the timer is zero
+	or	e				; 4
+	jp	nz,.loop			; 10	; If not, loop
+						; 104 total, 225 when crossing a bank
+.stop:
+	pop	ix
+	ld	a,2Ah				; mute sample
+	ld	c,80h
+	rst	zWriteFMI
+	ld	a,2Bh				; either enable or disable the DAC
+	ld	c,(ix+zVar.DACEnabled)
+	rst	zWriteFMI
+	ei
+	jp	zBankSwitchToMusic
+	valfor68k smps_segacycle,104
 ; ---------------------------------------------------------------------------
 
 zDACUpdateTrack:
@@ -1215,6 +1281,7 @@ rwaaauh	defl rwaaauh+1
 rwaaauh	defl 100h-((zCommandIndexEnd-zCommandIndex)/2)
 zCommandIndex:
 	valfor68k  CmdID__First,rwaaauh
+	cmdinclude zPlaySegaChant,	cmdid_Sega
 	cmdinclude zStopSoundEffects,	cmdid_StopSFX
 	cmdinclude zFadeOutMusic,	cmdid_FadeOut
 	cmdinclude zSpeedUpMusic,	cmdid_SpeedUp

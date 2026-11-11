@@ -8,11 +8,6 @@ zBankRegister	equ $6000
 zPSG		equ $7F11
 zROMWindow	equ $8000
 
-ensure1byteoffset macro maxsize
-	if ((($)&0FFh)>(100h-maxsize))
-	align 100h
-	endif
-	endm
 rstalign macro
 	assert $<=38h
 	align 8
@@ -29,11 +24,13 @@ playback_noattack	equ 4	; 4 (10h): do not attack next note
 playback_playing	equ 7	; 7 (80h): track is playing
 
 	STRUCT zTrack
-PlaybackControl:	defb
+; expected to be 0
+PlaybackControl:	defb	
 	; 	"voice control"; bits:
 	; 	2 (04h): If set, bound for part II, otherwise 0 (see zWriteFMIorII)
 	; 		-- bit 2 has to do with sending key on/off, which uses this differentiation bit directly
 	; 	7 (80h): PSG Track
+; expected to be 1
 VoiceControl:		defb
 TempoDivider:		defb	; timing divisor; 1 = Normal, 2 = Half, 3 = Third...
 
@@ -43,7 +40,7 @@ DataPointerHigh:	defb	; Track's position high byte
 ;DataBank:		defb	; Tracks position rom bank
 Transpose:		defb	; Transpose (from coord flag E9)
 Volume:			defb	; channel volume
-ModulationCtrl:		defb	; 0 means no, bit 7 set means use modalgo
+ModulationCtrl:		defb	; 0 means no modulation, bit 7 set means use modalgo
 VolEnvID:		defb	; 
 
 VolEnvIndex:		defb	; 
@@ -109,11 +106,13 @@ zQueueSlot3:		defs 1
 zDoSFXFlag:		defs 1		; Flag to indicate we're updating SFX (and thus use custom voice table); set to FFh while doing SFX, 0 when not.
 zDACUpdating:		defs 1		; Set to FFh while DAC is updating, then back to 00h
 zPcmQueue:		defs 1
+zPcmBank:		defs 1
 zPcmSfxFlag:		defs 1
 
 zClearRange:
 zPlaying1upFlag:	defs 1
 zSpindashTimer:		defs 1
+zSpindashIndex:		defs 1
 zStopMusic:		defs 1		; Set to 7Fh to pause music, set to 80h to unpause. Otherwise 00h
 zPaused:		defs 1		; 0 = normal, -1 = pause all sound and music
 zSFXPriorityVal:	defs 1
@@ -191,7 +190,7 @@ zDataTable:	zData
 zEntryPoint:
 	di
 	ld	sp,zStack
-	jp	zloc_167
+	jp	zInitDriver
 zPalModeByte:	db 0
 	valfor68k smps_palflag		,zPalModeByte
 ; ---------------------------------------------------------------------------
@@ -303,8 +302,7 @@ zUpdateDAC:
 	ld	a,(zPcmQueue)					; Get currently playing DAC sound
 	or	a
 	jr	NZ,.newdac					; If one is queued, go to it!
-.currbank:							; bank is +1 from here (self-modifying code)
-	ld	a,00h
+	ld	a,(zPcmBank)
 	call	zBankSwitch					; Bankswitch to the DAC data
 	exx
 	pop	af
@@ -336,7 +334,7 @@ zUpdateDAC:
 	ld	a,(hl)
 	inc	hl
 	ex	hl,de
-	ld	(.currbank+1),a
+	ld	(zPcmBank),a
 	call	zBankSwitch
 	ex	hl,de
 	ld	a,80h						; reset DPCM encodings "d" register, which is shadow register 'a'
@@ -417,7 +415,7 @@ counter defl counter + zTrack.len
 	ret
 ; ---------------------------------------------------------------------------
 
-zloc_167:
+zInitDriver:
 	im	1
 	call	zClearTrackPlaybackMem
 	ei
@@ -471,7 +469,7 @@ zWriteToDAC:
 						; 45+13l
 	ld	iyl,a					; 8	; UNDOC ; use as an index (256 aligned)
 	ex	af,af'					;'4	; shadow register 'a' is the 'd' value for 'jman2050' encoding
-	add	a,(iy+0)				; 19	; Get byte from zDACDecodeTbl (self-modified to proper index)
+	add	a,(iy+0)				; 19	; Get byte from zDACDecodeTbl
 	ld	(zYM2612_D0),a				; 13	; Write this byte to the DAC
 	ex	af,af'					;'4	; back to regular registers
 	ld	a,b					; 4	; Get next DAC byte
@@ -489,7 +487,7 @@ zWriteToDAC:
 	bit	7,h					; 8	;
 	jr	NZ,.dobank				; 12	;
 	push	af						; this'll lead to a small dip in the Hz rate... for one sample, every ~65000 samples
-	ld	hl,zUpdateDAC.currbank+1			; TODO: calculate how big that dip is
+	ld	hl,zPcmBank					; TODO: calculate how big that dip is
 	inc	(hl)
 	ld	a,(hl)
 	ld	hl,zBankRegister
@@ -504,7 +502,7 @@ zWriteToDAC:
 .dobank:					; 45+13l
 	ld	iyl,a					; 8	; UNDOC ; use as an index (256 aligned)
 	ex	af,af'					;'4	; shadow register 'a' is the 'd' value for 'jman2050' encoding
-	add	a,(iy+0)				; 19	; Get byte from zDACDecodeTbl (self-modified to proper index)
+	add	a,(iy+0)				; 19	; Get byte from zDACDecodeTbl
 	ld	(zYM2612_D0),a				; 13	; Write this byte to the DAC
 	ex	af,af'					;'4	; back to regular registers
 	ld	b,c					; 4	; reload 'b' with wait value
@@ -523,6 +521,18 @@ zWriteToDAC:
 .wait:	jr	.wait						; wait until pcm is queued (it'll manipulate stack to zWriteToDAC.start)
 	valfor68k smps_dpcmcycle,119
 ; ---------------------------------------------------------------------------
+zGetMusicTrackOffset:
+	add	a,zMusicTrackOffs&$FF	; table+index
+	ld	l,a
+	adc	a,zMusicTrackOffs>>8
+	sub	l
+	ld	h,a
+	ld	a,(hl)			; get pointer
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	ret
+
 ; 'jman2050' DAC decode lookup table
 	align 100h
 zDACDecodeTbl:
@@ -538,8 +548,7 @@ zDACDecodeTbl:
 	; The zeroes appear after FM 3 because it calculates the offsets into
 	; these tables by their channel assignment, where between Channel 3
 	; and Channel 4 there is a gap numerically.
-	
-	ensure1byteoffset 20h
+
 zMusicTrackOffs:
 	; These are offsets to different music tracks starting with FM3
 	dw	zSongFM3,      0000h,  zSongFM4,  zSongFM5	; FM3, 0, FM4, FM5
@@ -626,21 +635,18 @@ zDACUpdateTrack:
 	jp	.coordloop					; Loop back around...
 .notcoord:
 	or	a						; Test 'a' for 80h not set, which is a note duration
-	jp	P,zloc_20E					; If note duration, jump to zloc_20E (note that "hl" is already incremented)
+	jp	P,.time						; If note duration, jump (note that "hl" is already incremented)
 	ld	(ix+zTrack.SavedDAC),a				; This is a note; store it here 
 	ld	a,(hl)						; Get next byte...
 	or	a						; Test 'a' for 80h not set, which is a note duration
-	jp	P,zloc_20D					; Is this a duration this time??  If so, jump to zloc_20D (only difference is to increment "hl")
+	jp	P,.notetime					; Is this a duration this time?? If so, jump to zloc_20D (only difference is to increment "hl")
 	; Note followed a note... apparently recycles the previous duration
 	ld	a,(ix+zTrack.SavedDuration)			; Current DAC note ticker goal value -> 'a'
 	ld	(ix+zTrack.DurationTimeout),a			; Use it again
 	jr	zDACAfterDur					; Jump to after duration subroutine...
-; ---------------------------------------------------------------------------
-
-zloc_20D:
+.notetime:
 	inc	hl						; Goes to next byte (after duration byte)
-
-zloc_20E:
+.time:
 	call	zSetDuration
 
 ;zloc_211
@@ -737,17 +743,17 @@ zFMSetFreq:
 	sla	c
 	sla	c						; multiply octave value by 8, to get final octave bits
 
-	add	a,zFMFrequencies&0FFh
-	ld	(.freq+2),a
+	add	a,zFMFrequencies&$FF
+	ld	(.freq+2),a					; (self-modifying code)
 	ld	d,a
-	adc	a,(zFMFrequencies&0FF00h)>>8
+	adc	a,zFMFrequencies>>8
 	sub	d
-	ld	(.freq+3),a
-.freq:	ld	de,(zFMFrequencies)				; Stores frequency into "de"
-	ld	(ix+zTrack.FreqLow),e				; Frequency low byte   -> trackPtr + 0Dh
+	ld	(.freq+3),a					; (self-modifying code)
+.freq:	ld	de,(zFMFrequencies)				; Store frequency into "de" (self-modified code)
+	ld	(ix+zTrack.FreqLow),e
 	ld	a,d
 	or	c
-	ld	(ix+zTrack.FreqHigh),a				; Frequency high byte  -> trackPtr + 0Eh
+	ld	(ix+zTrack.FreqHigh),a
 	ret
 .rest:
 	set	playback_resting,(ix+zTrack.PlaybackControl)	; Set bit 1 (track is at rest)
@@ -891,7 +897,7 @@ zFMPrepareNote:
 	ld	d,(ix+zTrack.FreqHigh)				; Get frequency high
 	ld	a,d
 	or	e
-	jp	Z,zloc_4C5					; If de == 0, go to zloc_4C5
+	jp	Z,zRestTrack					; If frequency is zero, rest the track
 
 ;zloc_3F5
 zFMUpdateFreq:
@@ -971,16 +977,15 @@ zPSGSetFreq:
 	jr	C,.rest						; If carry (can only be $80) this is a rest!
 	add	a,(ix+zTrack.Transpose)				; Add current channel transpose to note
 	add	a,a						; Multiply note value by 2
-	add	a,zPSGFrequencies&0FFh
-	ld	(.freq+2),a
-	ld	(.freq+2),a
+	add	a,zPSGFrequencies&$FF
+	ld	(.freq+2),a					; (self-modifying code)
 	ld	d,a
-	adc	a,(zPSGFrequencies&0FF00h)>>8
+	adc	a,zPSGFrequencies>>8
 	sub	d
-	ld	(.freq+3),a
-.freq:	ld	de,(zPSGFrequencies)				; Gets appropriate frequency setting -> 'de'
-	ld	(ix+zTrack.FreqLow),e				; Frequency low byte   -> trackPtr + 0Dh
-	ld	(ix+zTrack.FreqHigh),d				; Frequency high byte  -> trackPtr + 0Eh
+	ld	(.freq+3),a					; (self-modifying code)
+.freq:	ld	de,(zPSGFrequencies)				; Store frequency into "de" (self-modified code)
+	ld	(ix+zTrack.FreqLow),e
+	ld	(ix+zTrack.FreqHigh),d
 	ret
 .rest:
 	; If you get here, we're doing a PSG rest
@@ -996,7 +1001,7 @@ zPSGSetFreq:
 ;zsub_487
 zPSGDoNoteOn:
 	bit	7,(ix+zTrack.FreqHigh)				; If track is at rest (frequency was set to FFh)...
-	jr	NZ,zloc_4C5					; jump to zloc_4C5
+	jr	NZ,zRestTrack					; ...rest the track
 	ld	e,(ix+zTrack.FreqLow)				; Frequency low byte -> e
 	ld	d,(ix+zTrack.FreqHigh)				; Frequency high byte -> d
 
@@ -1035,7 +1040,7 @@ zPSGUpdateFreq:
 	ret
 ; ---------------------------------------------------------------------------
 
-zloc_4C5:
+zRestTrack:
 	set	playback_resting,(ix+zTrack.PlaybackControl)		; Set "track at rest" bit
 	ret
 ; End of function zPSGDoNoteOn
@@ -1372,7 +1377,7 @@ zBGMLoad:
 
 	ld	e,(ix+0)					; Get voice table pointer low byte -> 'e'
 	ld	d,(ix+1)					; Get voice table pointer high byte -> 'd'
-	ld	(.fminst),de					; 
+	ld	(.fminst),de					; (self-modifying code)
 
 	ld	a,(ix+5)					; Get main tempo value
 	ld	(zAbsVar.TempoMod),a				; Store it
@@ -1394,7 +1399,7 @@ zBGMLoad:
 	add	hl,de						; +06h (to DAC pointer)
 	ld	a,(ix+2)					; Get number of FM+DAC channels this BGM has
 	or	a						; Test it
-	jp	Z,.nofm					; If zero, then don't init any
+	jp	Z,.nofm						; If zero, then don't init any
 	ld	b,a						; 'a' -> 'b' (num FM+DAC channels this song, for loop)
 	push	iy						; Save 'iy'
 	ld	iy,zTracksStart					; 'iy' points to start of track memory
@@ -1406,7 +1411,7 @@ zBGMLoad:
 	ld	(iy+zTrack.DurationTimeout),1			; set current duration timeout to 1 (should expire next update, play first note, etc.)
 	ld	(iy+zTrack.AMSFMSPan),0C0h			; default Panning / AMS / FMS settings (only stereo L/R enabled)
 .fminst	equ $+1
-	ld	de,0
+	ld	de,0						; fm voice table address (self-modified code)
 	ld	(iy+zTrack.VoicePtrLow),e
 	ld	(iy+zTrack.VoicePtrHigh),d
 	push	bc						; saving number of channels and tempo divider ('bc' gets needlessly damaged by 'ldi' instructions coming up)
@@ -1452,6 +1457,7 @@ zBGMLoad:
 	rst	zWriteFMI					; Set it!
 .nofm:
 	; End of DAC/FM init, begin PSG init
+
 	ld	a,(ix+3)					; Get number of PSG tracks
 	or	a						; Test it
 	jp	Z,.nopsg					; If zero, skip this part!
@@ -1484,76 +1490,44 @@ zBGMLoad:
 	ld	ix,zTracksSFXStart				; 'ix' points to start of SFX track memory (10 prior tracks were DAC, 6 FM, 3 PSG)
 	ld	b,(zTracksSFXEnd-zTracksSFXStart)/zTrack.len	; 6 SFX tracks total (3FM, 3PSG)
 	ld	de,zTrack.len					; size between tracks
-
-zloc_8D9:
+.sfxloop:
 	bit	playback_playing,(ix+zTrack.PlaybackControl)	; Is this track currently playing?
-	jr	Z,zloc_8FB					; If not, jump to zloc_8FB (no work to do!)
+	jr	Z,.nosfx					; If not, branch
 	ld	a,(ix+zTrack.VoiceControl)			; Get "voice control" byte...
 	or	a						; Test it
-	jp	M,.psg						; If this is a PSG track, jump to '+'
+	jp	M,.sfxpsg					; If this is a PSG track, jump to '+'
 	sub	2						; Otherwise, subtract 2...
 	add	a,a						; ... multiply by 2 (preparing to index starting from FM 3 only)
-	jr	zloc_8F1					; Jump to zloc_8F1 (general track setup)
-.psg:
+	jr	.sfxfmcont
+.sfxpsg:
 	rra
 	rra
 	rra
 	rra
 	and	0Fh						; for PSG, just shift it down by 4 and we have its index!
-
-zloc_8F1:
-	add	a,zMusicTrackOffs&0FFh				; get offset into appropriate music track...
-	ld	(zloc_8F6+1),a					; store into the instruction after zloc_8F6 (self-modifying code)
-zloc_8F6:
-	ld	hl,(zMusicTrackOffs)				; This loads address of corresponding MUSIC track (the track that this SFX track would normally play over)
-	set	2,(hl)						; Set the "SFX override" bit
-
-zloc_8FB:
+.sfxfmcont:
+	call	zGetMusicTrackOffset
+	set	playback_override,(hl)				; Set the "SFX override" bit
+.nosfx:
 	add	ix,de						; Next track..
-	djnz	zloc_8D9					; Loop for all tracks
+	djnz	.sfxloop					; Loop for all tracks
 	; End of SFX tracks init...
 
 	ld	ix,zSongFM1					; 'ix' points to first FM music track
 	ld	b,(zSongPSG1-zSongFM1)/zTrack.len		; For all 6 of those...
-
 	; zFMNoteOff isn't enough to silence the entire channel:
 	; For added measure, we set Total Level and Release Rate, too.
-.fmloop:
-	push	bc
-	bit	playback_override,(ix+zTrack.PlaybackControl)	; Is bit 2 (SFX overriding) set?
-	call	Z,zFMSilenceChannel				; If not, branch
+.fmoff:
+	call	zFMSilenceChannel				; If not, branch
 	add	ix,de						; Next track
-	pop	bc
-	djnz	.fmloop
+	djnz	.fmoff
 
 	ld	b,(zTracksEnd-zSongPSG1)/zTrack.len		; For all 3 PSG tracks...
-.psgloop:
+.psgoff:
 	call	zPSGNoteOff					; Send Note Off
 	add	ix,de						; Next track
-	djnz	.psgloop
+	djnz	.psgoff
 
-	ret
-
-zFMSilenceChannel:
-	call	zSetMaxRelRate
-	ld	a,(ix+zTrack.VoiceControl)			; Get voice control byte
-	and	3						; Channels only!
-	add	a,40h						; Set total level...
-	ld	c,7Fh						; ... to minimum envelope amplitude...
-	call	zFMOperatorWriteLoop				; ... for all operators of this track's channel
-	jp	zFMNoteOff
-
-zSetMaxRelRate:
-	ld	a,(ix+zTrack.VoiceControl)			; Get voice control byte
-	and	3						; Channels only!
-	add	a,80h						; Add register 80, set D1L to minimum and RR to maximum...
-	ld	c,0FFh						; ... for all operators on this track's channel
-
-zFMOperatorWriteLoop:
-	ld	b,4						; Loop 4 times
-.loop:	rst	zWriteFMIorII					; Write to part I or II, as appropriate
-	add	a,4						; a += 4
-	djnz	.loop						; Loop
 	ret
 ; ---------------------------------------------------------------------------
 ; FM channel assignment bits
@@ -1565,11 +1539,15 @@ zFMDACInitBytes:	db    6,   0,   1,   2,   4,   5,   6	; first byte is for DAC; 
 zPSGInitBytes:	db  80h,0A0h,0C0h				; Specifically, these configure writes to the PSG port for each channel
 
 ; zloc_920:
+zPlaySound_KillSFXPrio:
+	xor	a
+	ld	(zSFXPriorityVal),a				; Reset SFX priority
+	ret
 zPlaySound:
 	ld	c,a						; Store sound index -> 'c'
 	ld	a,(zPlaying1upFlag)				; Get "is 1-up playing" flag...
 	or	(ix+zVar.FadeInFlag)				; Or it with fading in flag
-	jp	NZ,zloc_KillSFXPrio				; If either is set, SFX cannot be played!!
+	jr	NZ,zPlaySound_KillSFXPrio			; If either is set, SFX cannot be played!!
 	call	zBankSwitchToSFX				; Switch to SFX banks
 ; zero-index the sfx id
 	ld	a,(zDataTable.sfxid_first)			; Get first sfx id into 'e'
@@ -1606,15 +1584,12 @@ zPlaySound:
 	inc	hl
 	ld	(.fminst),de					; store into the instruction after .fminst (self-modifying code)
 
-	ld	a,(hl)						; Timing divisor -> 'c'
-	ld	(.divisor),a
+	ld	c,(hl)						; Timing divisor -> 'c'
 	inc	hl
 	ld	b,(hl)						; Total channels used -> 'b'
 	inc	hl
 .loop:
 	push	bc						; backup channel usage
-	xor	a
-	ld	(.isfm),a 					; store into the instruction after .isfm (self-modifying code)
 
 	ld	a,(hl)						; Track sound def -> 'a' (if bit 7 is set it's PSG, otherwise it's FM)
 	or	a						; test it
@@ -1623,9 +1598,6 @@ zPlaySound:
 	add	a,a						; Multiply it by 2
 	jr	.fmsound					; This is an FM sound track...
 .psgsound:
-	; This is a PSG track!
-	; Always ends up writing zero to voice table pointer?
-	ld	(.isfm),a					; store into the instruction after .isfm (self-modifying code)
 	cp	0C0h						; Is this PSG3?
 	jr	NZ,.psg3					; If not, skip this part
 	push	af
@@ -1643,25 +1615,19 @@ zPlaySound:
 
 .fmsound:
 	push	hl						; save current position within sound (offset 04h)
-	add	a,zMusicTrackOffs&0FFh				; Offset to corresponding music track
-	ld	(.mof),a					; store into the instruction after zloc_9CF (self-modifying code)
-.mof	equ $+1
-	ld	hl,(zMusicTrackOffs)				; 'hl' is now start of corresponding music track 
-	set	2,(hl)						; Set "SFX is overriding this track!" bit
-	add	a,zSFXTrackOffs-zMusicTrackOffs			; Jump to corresponding SFX track
-	ld	(.sof),a					; store into the instruction after zloc_9D9 (self-modifying code)
-.sof	equ $+2
-	ld	ix,(zSFXTrackOffs)				; 'ix' is now start of corresponding SFX track
-	
-	; Little bit busy there, but basically for a given 'a' value, where a == 0
-	; means first SFX track (FM3), 'hl' now points to the music track and 'ix' points
-	; to the SFX track that both correspond to track 'a'
-	
+
+	ld	e,a						; save for SFX track offset
+	call	zGetMusicTrackOffset
+	set	playback_override,(hl)				; Set "SFX is overriding this track!" bit for the corresponding BGM
+	ld	a,e
+	add	a,zSFXTrackOffs-zMusicTrackOffs
+	call	zGetMusicTrackOffset
+	ld	e,l						; de = hl = start of sfx channel ram
+	ld	d,h
+	push	de						; ix = de = hl = start of channel ram
+	pop	ix
+
 	; Now we're going to clear this SFX track...
-	push	ix						; de = start of channel ram
-	pop	de
-	ld	l,e						; hl = de = start of channel ram
-	ld	h,d
 	ld	(hl),0						; store 00h on first byte of track
 	inc	de						; next byte...
 	ld	bc,zTrack.len-1					; For all bytes in the track, minus 1 (since we're copying 00h from first byte)
@@ -1669,16 +1635,20 @@ zPlaySound:
 
 	; Now let's actually set it up
 	pop	hl						; Get 'hl' back from way before (offset of sound in ROM + 04h)
-	push	ix						; de = start of channel ram, again
-	pop	de
 	ld	(ix+zTrack.PlaybackControl),1<<playback_playing
 	ld	a,(hl)
 	inc	hl
 	ld	(ix+zTrack.VoiceControl),a
-.divisor	equ $+3
-	ld	(ix+zTrack.TempoDivider),0			; Set timing divisor of SFX track
-	ld	(ix+zTrack.DurationTimeout),1			; current duration timeout to 1 (will expire immediately and thus update)
-	ld	(ix+zTrack.StackPointer),zTrack.GoSubStack	; Reset track "gosub" stack
+	bit	7,a						; check if the channel is an FM track
+	jr	NZ,.notfm
+.fminst	equ $+1
+	ld	de,0						; fm voice table address (self-modified code)
+	ld	(ix+zTrack.VoicePtrLow),e
+	ld	(ix+zTrack.VoicePtrHigh),d
+	ld	(ix+zTrack.AMSFMSPan),0C0h			; Default panning / AMS / FMS settings (just L/R Stereo enabled)
+.notfm:
+	push	ix						; de = start of channel ram, again
+	pop	de
 	ld	a,e
 	add	a,zTrack.DataPointerLow
 	ld	e,a
@@ -1687,25 +1657,14 @@ zPlaySound:
 	ld	d,a						; de += 1 (skip timing divisor; already set)
 	ld	bc,4
 	ldir							; while (bc-- > 0) *de++ = *hl++; (copy track address, default key offset, volume)
-.isfm	equ $+1
-	ld	a,0						; "self-modified code"; if 00h, no custom voice table defined for this track
-	or	a						; Test it
-	jr	NZ,.notfm					; If not zero, skip next part...
-	ld	(ix+zTrack.AMSFMSPan),0C0h			; Default panning / AMS / FMS settings (just L/R Stereo enabled)
-.fminst	equ $+1
-	ld	de,0						; "self-modified code" to custom voice table address (possibly still 0000h)
-	ld	(ix+zTrack.VoicePtrLow),e			; low byte of custom voice table (for SFX)
-	ld	(ix+zTrack.VoicePtrHigh),d			; high byte of custom voice table (for SFX)
-.notfm:
-	pop	bc						; restore channel counts
-	dec	b						; One less channel
-	jp	NZ,.loop					; If more to go, loop!
-	ret
-; ---------------------------------------------------------------------------
 
-zloc_KillSFXPrio:
-	xor	a
-	ld	(zSFXPriorityVal),a				; Reset SFX priority
+	pop	bc						; restore channel count and divisor
+	ld	(ix+zTrack.TempoDivider),c			; Set divisor
+	ld	(ix+zTrack.DurationTimeout),1			; current duration timeout to 1 (will expire immediately and thus update)
+	ld	(ix+zTrack.StackPointer),zTrack.GoSubStack	; Reset track "gosub" stack
+	djnz	.loop
+;	dec	b
+;	jp	NZ,.loop
 	ret
 ; End of function zPlaySoundByIndex
 
@@ -1718,26 +1677,23 @@ zStopSoundEffects:
 	ld	(zSFXPriorityVal),a				; Reset SFX priority
 	ld	ix,zTracksSFXStart				; 'ix' points to start of SFX track memory (10 prior tracks were DAC, 6 FM, 3 PSG)
 	ld	b,(zTracksSFXEnd-zTracksSFXStart)/zTrack.len	; All 6 SFX tracks...
-
-zloc_A46:
+.loop:
 	push	bc						; Save 'bc'
 	bit	playback_playing,(ix+zTrack.PlaybackControl)	; Check if this track was playing
-	jp	Z,zloc_AB6					; If not 
+	jr	Z,.fmcont					; If not 
 	res	playback_playing,(ix+zTrack.PlaybackControl)	; You're not playing anymore!
 	res	playback_noattack,(ix+zTrack.PlaybackControl)	; Not not attacking, either
 	ld	a,(ix+zTrack.VoiceControl)			; Get "voice control" byte
 	or	a						; Test it
-	jp	M,zloc_A89					; If 80h set (PSG Track) jump to zloc_A89
+	jp	M,.psg						; If 80h set (PSG Track) jump to .psg
+.fm:
 	push	af
 	call	zFMNoteOff					; FM Key off
 	pop	af
 	push	ix
-	sub	2						; Determine proper corresponding music track (starting on FM3, so subtract 2 from channel assignment)
-	add	a,a						; Multiply by 2 (each index 2 bytes)
-	add	a,zMusicTrackOffs&0FFh				; Get offset -> 'a'
-	ld	(zloc_A6C+2),a					; store into the instruction after zloc_A6C (self-modifying code)
-zloc_A6C:
-	ld	ix,(zMusicTrackOffs)				; "self-modified code"; will load appropriate corresponding music track address
+	call	zGetMusicTrackOffset
+	push	hl
+	pop	ix
 	bit	playback_override,(ix+zTrack.PlaybackControl)	; Was this music track is overridden by an SFX track?
 	jr	Z,.sfxoverride					; If not, do nothing
 	res	playback_override,(ix+zTrack.PlaybackControl)	; Otherwise, tell it is is no longer!
@@ -1745,10 +1701,8 @@ zloc_A6C:
 	call	zSetVoice					; Reset FM voice
 .sfxoverride:
 	pop	ix
-	jp	zloc_AB6					; jump down to loop
-; ---------------------------------------------------------------------------
-
-zloc_A89:
+	jp	.fmcont						; jump down to loop
+.psg:
 	push	af
 	call	zPSGNoteOff					; PSG Note off
 	pop	af
@@ -1758,10 +1712,9 @@ zloc_A89:
 	rra
 	rra
 	and	0Fh						; 'a' is now 08, 0A, 0C, or 0E
-	add	a,zMusicTrackOffs&0FFh
-	ld	(zloc_A9B+2),a					; store into the instruction after zloc_A9B (self-modifying code)
-zloc_A9B:
-	ld	ix,(zMusicTrackOffs)				; self-modified code from just above; 'ix' points to corresponding Music PSG track
+	call	zGetMusicTrackOffset
+	push	hl
+	pop	ix
 	res	playback_override,(ix+zTrack.PlaybackControl)	; tell this track it is is no longer overridden by SFX!
 	set	playback_resting,(ix+zTrack.PlaybackControl)	; Set track to rest
 	ld	a,(ix+zTrack.VoiceControl)			; Get voice control
@@ -1771,12 +1724,11 @@ zloc_A9B:
 	ld	(zPSG),a					; Write it to PSG
 .psg4:
 	pop	ix
-
-zloc_AB6:
+.fmcont:
 	ld	de,zTrack.len
 	add	ix,de						; Got to next track
 	pop	bc						; Restore 'bc'
-	djnz	zloc_A46					; Loop around...
+	djnz	.loop					; Loop around...
 	ret
 ; End of function zStopSoundEffects
 
@@ -2072,8 +2024,19 @@ zFMNoteOn:
 
 ; ||||||||||||||| S U B	R O U T	I N E |||||||||||||||||||||||||||||||||||||||
 
-
 ;zsub_C56
+zFMSilenceChannel:
+	bit	playback_override,(ix+zTrack.PlaybackControl)	; Is "SFX override" bit set?
+	ret	NZ						; If so, quit!
+	push	bc
+	add	a,80h
+	ld	bc,80h<<8|0FFh					; Set D1L to minimum and RR to maximum
+	call	zFMOperatorWriteLoop
+	ld	bc,40h<<8|7Fh					; Set total level to minimum envelope amplitude
+	call	zFMOperatorWriteLoop
+	pop	bc
+;	jr	zFMNoteOff
+
 zFMNoteOff:
 	ld	a,(ix+zTrack.PlaybackControl)			; Load this track's playback control byte
 	and	1<<playback_noattack|1<<playback_override	; Are bits 4 (no attack) or 2 (SFX overriding) set?
@@ -2087,6 +2050,16 @@ zFMNoteOff:
 	; and ccc is which channel (0-2 for channels 1-3, 4-6 for channels 4-6 WATCH BIT GAP)
 	
 	rst	zWriteFMI					; Write to part I (Note this particular register is ALWAYS sent to part I)
+	ret
+
+zFMOperatorWriteLoop:
+	ld	a,(ix+zTrack.VoiceControl)			; Get voice control byte
+	and	3						; Channels only!
+	add	b
+	ld	b,4						; Loop 4 times
+.loop:	rst	zWriteFMIorII					; Write to part I or II, as appropriate
+	add	a,4						; a += 4
+	djnz	.loop						; Loop
 	ret
 ; ---------------------------------------------------------------------------
 zBankSwitchToSFX:
@@ -2111,39 +2084,47 @@ zBankSwitch:
 ; ---------------------------------------------------------------------------
 zCoordFlag:
 	sub	0E0h
+	add	a			; table+(index*2)
+	add	a,.tbl&$FF
+	ld	e,a
+	adc	a,.tbl>>8
+	sub	e
 	ld	d,a
-	add	a,d
-	add	a,d
-	ld	(.jr+1),a		; store into the instruction after coordflagLookup (self-modifying code)
-	ld	a,(hl)
+	ld	a,(de)			; get pointer from table into bc
+	ld	c,a
+	inc	de
+	ld	a,(de)
+	ld	b,a
+	ld	a,(hl)			; prepare first flag input into a
 	inc	hl
-.jr:	jr	$
-	jp	cfPanningAMSFMS		; E0
-	jp	cfDetune		; E1
-	jp	cfSetCommunication	; E2
-	jp	cfJumpReturn		; E3
-	jp	cfSpindashRev		; E4
-	jp	cfSetTempoDivider	; E5
-	jp	cfChangeFMVolume	; E6
-	jp	cfPreventAttack		; E7
-	jp	cfNoteFill		; E8
-	jp	cfChangeTransposition	; E9
-	jp	cfSetTempo		; EA
-	jp	cfSetTempoMod		; EB
-	jp	cfChangePSGVolume	; EC
-	jp	cfClearPush		; ED
-	jp	cfStopSpecialFM4	; EE
-	jp	cfSetVoice		; EF
-	jp	cfModulation		; F0
-	jp	cfEnableModulation	; F1
-	jp	cfStopTrack		; F2
-	jp	cfSetPSGNoise		; F3
-	jp	cfDisableModulation	; F4
-	jp	cfSetPSGTone		; F5
-	jp	cfJumpTo		; F6
-	jp	cfRepeatAtPos		; F7
-	jp	cfJumpToGosub		; F8
-	jp	cfWriteFMI		; F9
+	push	bc			; makeshift jp (bc)
+	ret
+.tbl:	dw	cfPanningAMSFMS		; E0
+	dw	cfDetune		; E1
+	dw	cfSetCommunication	; E2
+	dw	cfJumpReturn		; E3
+	dw	cfSpindashRev		; E4
+	dw	cfSetTempoDivider	; E5
+	dw	cfChangeFMVolume	; E6
+	dw	cfPreventAttack		; E7
+	dw	cfNoteFill		; E8
+	dw	cfChangeTransposition	; E9
+	dw	cfSetTempo		; EA
+	dw	cfSetTempoMod		; EB
+	dw	cfChangePSGVolume	; EC
+	dw	cfClearPush		; ED
+	dw	cfStopSpecialFM4	; EE
+	dw	cfSetVoice		; EF
+	dw	cfModulation		; F0
+	dw	cfEnableModulation	; F1
+	dw	cfStopTrack		; F2
+	dw	cfSetPSGNoise		; F3
+	dw	cfDisableModulation	; F4
+	dw	cfSetPSGTone		; F5
+	dw	cfJumpTo		; F6
+	dw	cfRepeatAtPos		; F7
+	dw	cfJumpToGosub		; F8
+	dw	cfWriteFMI		; F9
 ; ---------------------------------------------------------------------------
 
 ; (via Saxman's doc): panning, AMS, FMS  
@@ -2529,10 +2510,9 @@ cfStopTrack:
 	; This is an FM SFX track that's trying to stop
 	sub	2						; Take channel assignment - 2 (since SFX never use FM 1 or FM 2)
 	add	a,a						; a *= 2 (each table entry is 2 bytes wide)
-	add	a,zMusicTrackOffs&0FFh				; Get low byte value from zMusicTrackOffs
-	ld	(zloc_F1D+2),a					; store into the instruction after zloc_F1D (self-modifying code)
-zloc_F1D:
-	ld	ix,(zMusicTrackOffs)				; self-modified code from just above; 'ix' points to corresponding Music FM track
+	call	zGetMusicTrackOffset
+	push	hl
+	pop	ix
 	bit	playback_override,(ix+zTrack.PlaybackControl)	; If "SFX is overriding this track" is not set...
 	jp	Z,.sfxoverride					; Skip this part (i.e. if SFX was not overriding this track, then nothing to restore)
 	call	zBankSwitchToMusic				; Bank switch back to music track
@@ -2558,10 +2538,9 @@ zStopPSGSFXTrack:
 	rra
 	rra							; in effect, ">> 4"
 	and	0Fh						; 'a' is now 08, 0A, 0C, or 0E
-	add	a,zMusicTrackOffs&0FFh
-	ld	(zloc_F5A+2),a					; store into the instruction after zloc_A5A (self-modifying code)
-zloc_F5A:
-	ld	ix,(zMusicTrackOffs)				; self-modified code from just above; 'ix' points to corresponding Music PSG track
+	call	zGetMusicTrackOffset
+	push	hl
+	pop	ix
 	res	playback_override,(ix+zTrack.PlaybackControl)	; Clear SFX is overriding this track from playback control
 	set	playback_resting,(ix+zTrack.PlaybackControl)	; Set track as resting bit
 	ld	a,(ix+zTrack.VoiceControl)			; Get voice control byte
@@ -2782,14 +2761,13 @@ cfSpindashRev:
 	ld	a,(zSpindashTimer)
 	or	a
 	jr	Z,.initialdash
-.index	equ $+1
-	ld	a,0
+	ld	a,(zSpindashIndex)
 	cp	9
 	jr	NC,.pitchboundary
 	inc	a
 .pitchboundary:
 .initialdash:
-	ld	(.index),a
+	ld	(zSpindashIndex),a
 ; update pitch
 	add	a,(ix+zTrack.Transpose)				; Add current channels pitch
 	ld	(ix+zTrack.Transpose),a				; Store it into channels pitch

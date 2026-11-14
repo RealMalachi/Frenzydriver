@@ -1072,6 +1072,7 @@ zPSGSetFreq:
 	ld	(ix+zTrack.FreqHigh),d
 	ret
 .psg4:
+	and	7
 	add	0E0h
 	ld	e,a
 	ld	d,0
@@ -2416,17 +2417,12 @@ cfStopTrack:
 ; check if all the bgm tracks are off. yes, all of them.
 	ld	hl,zTracksStart
 	ld	de,zTrack.len
-	rept (zTracksEnd-zTracksStart)/zTrack.len,i
-		if i=0
-		ld	a,(hl)
-		else
-		or	(hl)
-		endif
-		if (i+1)<((zTracksEnd-zTracksStart)/zTrack.len)
-		add	hl,de
-		endif
-	endr
-	and	1<<7
+	ld	b,((zTracksEnd-zTracksStart)/zTrack.len)-1
+	ld	a,(hl)
+.oring:	add	hl,de
+	or	(hl)
+	djnz	.oring
+	and	1<<playback_playing
 	jp	Z,cfFadeInToPrevious
 .notjingle:
 	res	playback_noattack,(ix+zTrack.PlaybackControl)	; Clear playback byte bit 4 (10h) -- do not attack

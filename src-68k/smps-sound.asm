@@ -23,6 +23,7 @@ zVolEnv:
 		volenvdef s2Tone_0B,fTone_0B
 		volenvdef s2Tone_0C,fTone_0C
 		volenvdef s2Tone_0D,fTone_0D
+		volenvdef s1mlTone_03,smlTone_03
 s2Tone_01:
 		envpsg 0,0,0,1,1,1,2,2,2,3,3,3,4,4,4,5
 		envpsg 5,5,6,6,6,7,HOLD
@@ -67,11 +68,14 @@ s2Tone_0C:
 s2Tone_0D:
 		envpsg 14,13,12,11,10,9,8,7,6,5,4,3,2,1,0,HOLD
 
+s1mlTone_03:	envpsg 0,0,1,4,9,11,15,HOLD
+
 MusID__First	equ $01
 zMasterPlaylist:
 		bgmdef 0,$00,BgmMCZ,bgmid_MCZ
 		bgmdef 0,$00,BgmSYZ,bgmid_SYZ
 		bgmdef 0,$00,BgmExtraLife,bgmid_ExtraLife
+		bgmdef 0,$00,BgmPsgDemo,bgmid_PsgDemo
 MusID__End	equ MusID__First+(((*)-zMasterPlaylist)/4)
 
 zDACPtrTbl:
@@ -100,6 +104,7 @@ SoundDriverLoad_DataEnd:
 BgmMCZ:		include "res/bgm/MCZ.asm"
 BgmSYZ:		include "res/bgm/SYZ.asm"
 BgmExtraLife:	include "res/bgm/ExtraLife.asm"
+BgmPsgDemo:	include "res/bgm/PSG DEMO.asm"
 		finishBank
 ; ---------------------------------------------------------------------------
 		startBank

@@ -46,6 +46,17 @@ SmpsResume:
 	SMPS_startZ80
 	rts
 
+SmpsPitch:
+	SMPS_stopwaitZ80
+	move.b	d0,smps_z80ram+smps_musicpitch
+	SMPS_startZ80
+	rts
+SmpsVol:
+	SMPS_stopwaitZ80
+	move.b	d0,smps_z80ram+smps_musicvol
+	SMPS_startZ80
+	rts
+
 ReadComm:
 	SMPS_stopwaitZ80
 	move.b	smps_z80ram+smps_commbyte,d0
@@ -89,7 +100,8 @@ SoundDriverLoad_DataLoop:
 	move.b	(a0)+,(a1)+
 	dbf	d0,SoundDriverLoad_DataLoop
 ; set misc flags
-	move	smps_vdpctrl,ccr				; check video mode (bit 0, carry bit)
+	lea	smps_vdpctrl,a0
+	move	(a0),ccr					; check video mode (bit 0, carry bit)
 	scs	smps_palflag(a3)				; set if PAL, clear if NTSC
 ; alright we're done
 	move.w	d2,smps_z80busreset-smps_z80busreq(a2)

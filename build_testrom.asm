@@ -516,8 +516,8 @@ CallAPI:
 		bra.w	.playcdda
 		bra.w	.pause
 		bra.w	.resume
-		bra.w	.bgmtempo
-		bra.w	.bgmspeed
+		bra.w	.bgmvol
+		bra.w	.bgmpitch
 .lute:
 
 .initdriver:
@@ -546,10 +546,12 @@ CallAPI:
 		jmp	SmpsPause
 .resume:
 		jmp	SmpsResume
-.bgmspeed:
-		rts
-.bgmtempo:
-		rts
+.bgmvol:
+		move.w	v_miscparam,d0
+		jmp	SmpsVol
+.bgmpitch:
+		move.w	v_miscparam,d0
+		jmp	SmpsPitch
 
 CallShortcut:
 		rts
@@ -812,8 +814,8 @@ ScreenText:
 		dc.l .a_cdda
 		dc.l .a_pause
 		dc.l .a_resume
-		dc.l .a_bgmtempo
-		dc.l .a_bgmspeed
+		dc.l .a_bgmvol
+		dc.l .a_bgmpitch
 .shortcut:
 		dc.l .s_stopall
 		dc.l .s_stopbgm
@@ -875,8 +877,8 @@ ScreenText:
 .a_cdda:	dctxt .amax,"PlayCDDA"
 .a_pause:	dctxt .amax,"PauseDriver"
 .a_resume:	dctxt .amax,"ResumeDriver"
-.a_bgmspeed:	dctxt .amax,"SetBGMSpeed"
-.a_bgmtempo:	dctxt .amax,"SetBGMTempo"
+.a_bgmpitch:	dctxt .amax,"SetBGMPitch"
+.a_bgmvol:	dctxt .amax,"SetBGMVolume"
 
 .smax		equ 15
 .s_stopall:	dctxt .smax,"Stop All"

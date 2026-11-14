@@ -202,11 +202,9 @@ nMaxPSG2	equ nB6
 cPSG1		equ $80
 cPSG2		equ $A0
 cPSG3		equ $C0
-cNoise		equ $E0	; Not for use in S3/S&K/S3D
 cFM3		equ $02
 cFM4		equ $04
 cFM5		equ $05
-cFM6		equ $06	; Only in S3/S&K/S3D, overrides DAC
 ; ---------------------------------------------------------------------------------------------
 makeSequencePointer macro x
 	dc.b	(\x)&$FF,(((\x)>>8)&$7F)|(1<<7)
@@ -236,6 +234,9 @@ songStart	set *
 psgdelta	set ((\ver\<3)&1)*12
 	if SMPS2ASMVer<SourceSMPS2ASM
 	inform 2,"This song was made for SMPS2ASM version $%h, whereas we only support up to version $%h",SourceSMPS2ASM,SMPS2ASMVer
+	endif
+	if (SourceDriver<1)|(SourceDriver>5)
+	inform 2,"SMPS2ASM only knows source drivers from 1 to 5, whereas this song uses $%h",SourceDriver
 	endif
 	endm
 
@@ -314,8 +315,8 @@ smpsHeaderChanSFX macro chan
 
 ; Header - Set up FM Channel
 smpsHeaderSFXChannel macro chanid,loc,pitch,vol
-	if chanid=cFM6
-	inform 3,"Using channel ID of FM6 ($06) in Sonic 1 or Sonic 2 drivers is unsupported. Change it to another channel."
+	if ~def(\chanid)
+	inform 3,"Using %s for SFX is unsupported. Change it to another channel.","\chanid"
 	endif
 	dc.b	\chanid
 	makeSequencePointer \loc
@@ -332,10 +333,11 @@ smpsHeaderSFXChannel macro chanid,loc,pitch,vol
 ; note manipulation
 smpsNoAttack	equ $E7
 smpsNoteFill macro val
-	if (SourceDriver>=3)
-	warning "S3K note fill isn't supported, you'll need to multiply the fill value by the tempo divider"
-	endif
+	if SourceDriver<3
 	dc.b	$E8,\val
+	else
+	dc.b	$E3,\val
+	endif
 	endm
 
 ; time
@@ -368,7 +370,14 @@ smpsAlterVol macro val
 	dc.b	$E6,\val
 	endm
 smpsFMAlterVol macro val1,val2
-	dc.b	$E6,\val1
+	if narg=1
+	smpsAlterVol \val1
+	else
+		if SourceDriver<3
+		smpsPSGAlterVol \val1
+		endif
+	smpsAlterVol \val2
+	endif
 	endm
 smpsPSGAlterVol macro vol
 	dc.b	$EC,\vol
@@ -377,6 +386,12 @@ smpsPSGAlterVolS2 macro
 	dc.b	$EC,\vol
 	endm
 smpsPSGvoice macro voice
+	dc.b	$F5,\voice
+	endm
+smpsFMFlutter macro voice,mask
+	if narg>1
+	inform 2,"FM volume envelopes don't support user-defined masks"
+	endif
 	dc.b	$F5,\voice
 	endm
 
@@ -392,6 +407,8 @@ smpsAlterNote macro val
 smpsModSet macro wait,speed,change,step
 	if SourceDriver>=3
 	dc.b	$F0,\wait\-1,\speed,\change,((((\step\=0)&1)*256)+\step\)/((((\speed\=0)&1)*256)+\speed\)-1
+	elseif SourceDriver=1
+	dc.b	$F0,\wait\+1,\speed,\change,\step
 	else
 	dc.b	$F0,\wait,\speed,\change,\step
 	endif
@@ -408,7 +425,7 @@ smpsStop macro
 	dc.b	$F2
 	endm
 smpsStopSpecial macro
-	warning "Coord. Flag to stop special SFX does not exist in S2 or S3 drivers. Complain to Flamewing to add it. With adequate caution, smpsStop can do this job."
+	inform 2,"Coord. Flag to stop special SFX does not exist in S2 or S3 drivers. With adequate caution, smpsStop can do this job."
 	dc.b	$F2
 	endm
 smpsFade macro val
@@ -427,7 +444,7 @@ smpsCall macro loc
 	makeSequencePointer \loc
 	endm
 smpsReturn macro val
-	dc.b	$E3
+	dc.b	$F9
 	endm
 
 ; communication
@@ -452,7 +469,10 @@ smpsPSGpulse macro
 	dc.b	$F3,0
 	endm
 smpsFMICommand macro reg,val
-	dc.b	$F9,\reg,\val
+	dc.b	$EE,\reg,\val
+	endm
+smpsChanFMCommand macro reg,val
+	dc.b	$ED,\reg,\val
 	endm
 
 ; misc
@@ -463,6 +483,9 @@ smpsWeirdD1LRR macro
 smpsSpindashRev macro
 	dc.b	$E4
 	endm
+smpsResetSpindashRev macro
+	dc.b	$FA
+	endm
 ; ---------------------------------------------------------------------------------------------
 ; Clears pushing sound flag in S1
 smpsClearPush macro
@@ -472,7 +495,7 @@ smpsClearPush macro
 ; S3/S&K/S3D-only coordination flags
 
 smpsSetVol macro val
-	inform 3,"Coord. Flag to set volume (instead of volume attenuation) does not exist in S1 or S2 drivers. Complain to Flamewing to add it."
+	inform 3,"Coord. Flag to set volume (instead of volume attenuation) does not exist in S1 or S2 drivers."
 	endm
 
 ; Silences FM channel then stops as per smpsStop
@@ -495,9 +518,6 @@ smpsSetNote macro val
 
 smpsFMIICommand macro reg,val
 	inform 3,"smpsFMICommand isn't supported"
-	endm
-smpsChanFMCommand macro reg,val
-	inform 3,"smpsChanFMCommand isn't supported"
 	endm
 
 smpsModChange2 macro fmmod,psgmod
@@ -533,14 +553,6 @@ smpsCopyData macro data,len
 
 smpsSSGEG macro op1,op2,op3,op4
 	inform 3,"smpsSSGEG isn't supported"
-	endm
-
-smpsFMFlutter macro tone,mask
-	inform 3,"smpsFMFlutter isn't supported"
-	endm
-
-smpsResetSpindashRev macro val
-	inform 3,"smpsResetSpindashRev isn't supported"
 	endm
 
 ; ---------------------------------------------------------------------------------------------

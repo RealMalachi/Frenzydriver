@@ -1798,6 +1798,7 @@ zUpdateFadeout:
 
 	push	ix
 
+	ld	iy,zSongExtra
 	ld	ix,zSongFM1					; 'ix' points to first FM music track
 	ld	b,(zSongPSG1-zSongFM1)/zTrack.len		; 6 FM tracks to follow...
 .fmloop:
@@ -2003,6 +2004,7 @@ zUpdateFadeIn:
 	ld	(ix+zVar.FadeInDelay),2				; Otherwise, reload tick count with 2 (little faster than fadeout)
 	push	ix
 
+	ld	iy,zSongExtra
 	ld	ix,zSongFM1					; 'ix' points to first FM music track
 	ld	b,(zSongPSG1-zSongFM1)/zTrack.len		; 6 FM tracks to follow...
 .fmloop:

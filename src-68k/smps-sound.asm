@@ -72,10 +72,10 @@ s1mlTone_03:	envpsg 0,0,1,4,9,11,15,HOLD
 
 MusID__First	equ $01
 zMasterPlaylist:
-		bgmdef 0,$00,BgmMCZ,bgmid_MCZ
-		bgmdef 0,$00,BgmSYZ,bgmid_SYZ
-		bgmdef 0,$00,BgmExtraLife,bgmid_ExtraLife
-		bgmdef 0,$00,BgmPsgDemo,bgmid_PsgDemo
+		bgmdef 0,BgmMCZ,bgmid_MCZ
+		bgmdef 0,BgmSYZ,bgmid_SYZ
+		bgmdef 0,BgmExtraLife,bgmid_ExtraLife
+		bgmdef 0,BgmPsgDemo,bgmid_PsgDemo
 MusID__End	equ MusID__First+(((*)-zMasterPlaylist)/4)
 
 zDACPtrTbl:

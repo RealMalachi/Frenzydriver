@@ -674,3 +674,7 @@ vcTL4	set \op4
 	dc.b	(vcDL4<<4)+vcRR4,(vcDL2<<4)+vcRR2,(vcDL3<<4)+vcRR3,(vcDL1<<4)+vcRR1
 	dc.b	vcTL4,vcTL2,vcTL3,vcTL1
 	endm
+; ---------------------------------------------------------------------------------------------
+smpsFooterEndSong macro
+	inform 2,"This is Frenzy, not Madness"
+	endm

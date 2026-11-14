@@ -1,6 +1,7 @@
 	device NOSLOT64K
 ; ---------------------------------------------------------------------------
 __debug		equ 0
+zYM2612_Status	equ $4000
 zYM2612_A0	equ $4000
 zYM2612_D0	equ $4001
 zYM2612_A1	equ $4002
@@ -85,6 +86,8 @@ len:
 	STRUCT zTrackExt
 Pitch			defs 1
 Volume			defs 1
+Speed			defs 1
+SpeedUpd		defs 1
 	ENDS
 
 	STRUCT zVar
@@ -93,10 +96,7 @@ MusicBankNumber:	defb
 IsPalFlag:		defb		; slow song
 
 TempoTimeout:		defb
-CurrentTempo:		defb		; Stores current tempo value here
-TempoMod:		defb
-TempoTurbo:		defb		; Stores the tempo if speed shoes are acquired (or 7Bh is played anywho)
-SpeedUpFlag:		defb
+CurrentTempo:		defb		; BGM-specific tempo delay
 
 FadeOutCounter:		defb
 FadeOutDelay:		defb
@@ -110,6 +110,7 @@ zRamStart:
 zStackEnd:		defs 64
 zStack:
 
+zSequenceRate:		defs 1
 zCommunication:		defs 1
 zQueueSlot1:		defs 1
 zQueueSlot2:		defs 1
@@ -169,7 +170,6 @@ zSaveSongFM6:		zTrack
 zSaveSongPSG1:		zTrack
 zSaveSongPSG2:		zTrack
 zSaveSongPSG3:		zTrack
-zSaveSongExtra:		zTrackExt
 zTracksSaveEnd:
 
 zRamEnd:
@@ -236,12 +236,11 @@ zWriteFMII:
 	pop	af
 	ret
 ; ---------------------------------------------------------------------------
-	block 38h-$
-zVInt:
-	; This is called every VBLANK (38h is the interrupt entry point,
-	; and VBLANK is the only one Z80 is hooked up to.)
-	push	af						; Save 'af'
+zUpdateSequencer:
 	exx							; Effectively backs up 'bc', 'de', and 'hl'
+	ld	a,27h						; rest timer B
+	ld	c,2Fh
+	rst	zWriteFMI
 
 	if __debug
 	ld	a,2Ah
@@ -288,58 +287,14 @@ zExitSequencer:
 	ld	a,(zPcmBank)
 	call	zBankSwitch					; Bankswitch to the DAC data
 	exx
-	pop	af
 	ld	b,1
-	ei
 	ret
 .newdac:
 	; If you get here, it's time to start a new DAC sound...
-	ld	e,a
-	dec	e
-	xor	a
-	ld	d,a
-	ld	(zPcmQueue),a
-
 ;	exx
-	pop	af
-	ld	hl,zWriteToDAC.start				; manipulate stack to the start of the sample playback routine
-	ex	(sp),hl
-
-	ld	hl,(zDataTable.pcmtable)
-	add	hl,de
-	add	hl,de
-	add	hl,de
-	add	hl,de
-	add	hl,de
-	add	hl,de
-
-	ex	af,af
-	ld	a,(hl)
-	inc	hl
-	ex	hl,de
-	ld	(zPcmBank),a
-	call	zBankSwitch
-	ex	hl,de
-	ld	a,80h						; reset DPCM encodings "d" register, which is shadow register 'a'
-	ex	af,af
-
-	ld	b,1
-	ld	c,(hl)
-	inc	hl
-
-	ld	e,(hl)
-	inc	hl
-	ld	d,(hl)
-	inc	hl
-
-	ld	b,(hl)
-	inc	hl
-	ld	h,(hl)
-	ld	l,b
-
-	ei
-	ret
-; End of function zVInt
+	pop	de						; restart sample playback
+	jp	zRunDriver.sample
+; End of function zUpdateSequencer
 
 
 ; ||||||||||||||| S U B	R O U T	I N E |||||||||||||||||||||||||||||||||||||||
@@ -348,11 +303,22 @@ zExitSequencer:
 
 ;zsub_110
 zUpdateMusic:
+	; If the system is PAL and the song doesn't opt out, update the song at 1.2x speed
+;	ld	hl,zPalModeByte					; Get zPalModeByte
+;	ld	a,(zAbsVar.IsPalFlag)				; Get IsPalFlag
+;	and	(hl)						; 'And' them together
+;	jr	Z,.nah						; If it comes out zero, do nothing
+;	ld	hl,zPALUpdTick					; Tick down double update timer
+;	dec	(hl)
+;	jr	NZ,.nah
+;	ld	(hl),5
+;	ret
+;.nah:
 	call	zBankSwitchToMusic
 	xor	a						; Clear 'a'
 	ld	(zDoSFXFlag),a					; Not updating SFX (updating music)
 	ld	iy,zSongExtra
-zUpdateMusic_PAL:
+.update:
 	; S3K tempo algorithm
 	; Tempo works as divisions of the 60Hz clock
 	; (there is a separate fix supplied for PAL that "kind of" keeps it on track)
@@ -408,16 +374,16 @@ zUpdateMusic_PAL:
 	add	ix,de
 	djnz	.psgloop
 
-	; If the system is PAL and the song doesn't opt out, update the song at 1.2x speed
-	ld	hl,zPalModeByte					; Get zPalModeByte
-	ld	a,(zAbsVar.IsPalFlag)				; Get IsPalFlag
-	and	(hl)						; 'And' them together
-	ret	Z						; If it comes out zero, do nothing
-	ld	hl,zPALUpdTick					; Tick down double update timer
-	dec	(hl)
+	ld	a,(zPlaying1upFlag)
+	or	a
 	ret	NZ
-	ld	(hl),5+1					; Updates every 5 frames (+1 to compensate for running this again)
-	jr	zUpdateMusic_PAL
+	ld	a,(iy+zTrackExt.Speed)
+	or	a
+	ret	Z
+	dec	(iy+zTrackExt.SpeedUpd)
+	ret	NC
+	ld	(iy+zTrackExt.SpeedUpd),a
+	jp	.update
 ; ---------------------------------------------------------------------------
 zUpdateSound:
 	call	zBankSwitchToSFX				; Bank switch to sound effects
@@ -452,8 +418,18 @@ zUpdateSound:
 zInitDriver:
 	im	1
 	call	zClearTrackPlaybackMem
-	ei
-.wait:	jr	.wait
+	ld	a,26h			; timerB
+	ld	c,0C8h			; 60tps
+	rst	zWriteFMI
+	ld	a,27h			; rest timers
+	ld	c,3Fh
+	rst	zWriteFMI
+zRunDriver:
+.wait:
+	ld	a,(zYM2612_Status)	; 13
+	and	2			; 7
+	call	NZ,zUpdateSequencer	; 10	; 17
+	jr	.wait			; 12
 
 ; DPCM sample playback.
 ; It starts with a value of 80h (mute) and adds a value represented by a 4-bit offset into a table
@@ -468,91 +444,116 @@ zInitDriver:
 ; hl = sample pointer
 ; iy = DPCM decode table
 ; NOTES:
-; 1. Interrupts can't be disabled for any longer then ~70 cycles (TODO: get exact number from MPCM2 doc)
 ; 2. For clean playback, the amount of time between each sample should be consistent
 ; 3. Regarding cycle counts: According to Kabuto, the Z80 suffers a delay of approximately 3.3 cycles for each ROM access.
 ;    https://plutiedev.com/mirror/kabuto-hardware-notes#bus-system
 ; 4. When restoring from vblank into playback, you need to run the following:
-;	push	af
 ;	exx
 ;	...
 ;	ld	a,2Ah
 ;	ld	(zYM2612_A0),a
 ;	ld	iyh,zDACDecodeTbl>>8				; UNDOC
+;	...
+;	exx
 ;	ld	a,(.currbank)
 ;	call	zBankSwitch
-;	exx
-;	pop	af
 ;	ld	b,1
-;	ei
-zWriteToDAC:
-.start:
-;	ld	a,2Ah
-;	ld	(zYM2612_A0),a
-;	ld	iyh,zDACDecodeTbl>>8				; UNDOC
-.loop:
-	djnz	$					; 8,13l	; Busy wait for specific amount of time in 'b'
-	di						; 4	; disable interrupts (while updating DAC)
-	ld	a,(hl)					; 7+3	; Get next DAC byte
-	ld	b,a					; 4	; save for next byte
-	rlca						; 4	;
-	rlca						; 4	;
-	rlca						; 4	;
-	rlca						; 4	;
-	and	0Fh					; 7	; UPPER 4-bit offset into zDACDecodeTbl
-						; 45+13l
-	ld	iyl,a					; 8	; UNDOC ; use as an index (256 aligned)
-	ex	af,af					; 4	; shadow register 'a' is the 'd' value for 'jman2050' encoding
-	add	a,(iy+0)				; 19	; Get byte from zDACDecodeTbl
-	ld	(zYM2612_D0),a				; 13	; Write this byte to the DAC
-	ex	af,af					; 4	; back to regular registers
-	ld	a,b					; 4	; Get next DAC byte
-	ld	b,c					; 4	; reload 'b' with wait value
-	ei						; 4	; enable interrupts (done updating DAC, busy waiting for next update)
-	inc	hl					; 6	; Next byte in DAC stream...
-	nop						; 4	; stall
-	nop						; 4	; stall
-						; 74
-						; 119 total
-	djnz	$					; 8,13l	; Busy wait for specific amount of time in 'b'
-	di						; 4	; disable interrupts (while updating DAC)
-	and	0Fh					; 7	; LOWER 4-bit offset into zDACDecodeTbl
-	dec	de					; 6	; One less byte
-	bit	7,h					; 8	;
-	jr	NZ,.dobank				; 12	;
-	push	af						; this'll lead to a small dip in the Hz rate... for one sample, every ~65000 samples
-	ld	hl,zPcmBank					; TODO: calculate how big that dip is
-	inc	(hl)
+.sample:
+	ld	a,(zPcmQueue)
+	ld	e,a
+	dec	e
+	xor	a
+	ld	d,a
+	ld	(zPcmQueue),a
+
+	ld	hl,(zDataTable.pcmtable)
+	add	hl,de
+	add	hl,de
+	add	hl,de
+	add	hl,de
+	add	hl,de
+	add	hl,de
+
 	ld	a,(hl)
-	ld	hl,zBankRegister
-	rept 7
-	ld	(hl),a
-	rrca
-	endr
-	ld	(hl),a
-	ld	(hl),h
-	pop	af
-	ld	hl,zROMWindow
-.dobank:					; 45+13l
+	inc	hl
+	ex	hl,de
+	ld	(zPcmBank),a
+	call	zBankSwitch
+	ex	hl,de
+
+	ld	c,(hl)
+	inc	hl
+
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+
+	ld	a,80h					; reset DPCM difference
+	ex	af,af
+	jr	.start
+.loop:
+	djnz	$					; 8	; 13l
+	ld	a,(zYM2612_Status)			; 13
+	and	2					; 7
+	call	NZ,zUpdateSequencer			; 10	; 17+godknowshowmuch
+.start:	ld	a,(hl)					; 7+3.3
+	ld	b,a					; 4
+						; 52+13l
 	ld	iyl,a					; 8	; UNDOC ; use as an index (256 aligned)
-	ex	af,af					; 4	; shadow register 'a' is the 'd' value for 'jman2050' encoding
-	add	a,(iy+0)				; 19	; Get byte from zDACDecodeTbl
-	ld	(zYM2612_D0),a				; 13	; Write this byte to the DAC
-	ex	af,af					; 4	; back to regular registers
-	ld	b,c					; 4	; reload 'b' with wait value
-	ei						; 4	; enable interrupts (done updating DAC, busy waiting for next update)
-	ld	a,d					; 4	;
-	or	e					; 4	;
-	jp	NZ,.loop				; 10	; If 'de' (length of sample) isn't 0, loop...
-						; 74
-						; 119 total
-	di
+	ex	af,af					; 4
+	add	a,(iy+0)				; 19
+	ld	(zYM2612_D0),a				; 13
+	ex	af,af					; 4
+	dec	de					; 6
+	ld	a,b					; 4
+	ld	b,c					; 4	; djnz loop
+	nop						; 4	; stall
+						; 66
+						; 118 total
+	djnz	$					; 8	; 13l
+	inc	hl					; 6
+	bit	7,h					; 8
+	jr	NZ,.bank				; 12	; 7
+	push	af						;
+	ld	hl,zPcmBank					;
+	inc	(hl)						;
+	ld	a,(hl)						;
+	ld	hl,zBankRegister				;
+	rept 7
+	ld	(hl),a						; 7
+	rrca							; 4
+	endr
+	ld	(hl),a						; 7
+	ld	(hl),h						; 7
+	pop	af						;
+	ld	hl,zROMWindow					;
+.bank:	rlca						; 4	; finish up the shift by 4
+	rlca						; 4
+	rlca						; 4	; next one will need to be shifted by 4
+	rlca						; 4
+						; 50+13l
+	ld	iyl,a					; 8	; UNDOC ; use as an index (256 aligned)
+	ex	af,af					; 4
+	add	a,(iy+0)				; 19
+	ld	(zYM2612_D0),a				; 13
+	ex	af,af					; 4	; djnz loop
+	ld	b,c					; 4	; Stop playback if the sample length is zero
+	ld	a,d					; 4
+	or	e					; 4
+	jp	NZ,.loop				; 10
+						; 70
+						; 120 total
 	xor	a						; if it's a SFX clear it
 	ld	(zPcmSfxFlag),a
 	ld	a,80h						; mute DAC
 	ld	(zYM2612_D0),a
-	ei
-.wait:	jr	.wait						; wait until pcm is queued (it'll manipulate stack to zWriteToDAC.start)
+	jp	.wait						; wait until pcm is queued
 	valfor68k smps_dpcmcycle,119
 ; ---------------------------------------------------------------------------
 zGetMusicTrackOffset:
@@ -566,13 +567,6 @@ zGetMusicTrackOffset:
 	ld	h,(hl)
 	ld	l,a
 	ret
-
-; 'jman2050' DAC decode lookup table
-	align 100h
-zDACDecodeTbl:
-	db	   0,    1,   2,   4,   8,  10h,  20h,  40h
-	db	 80h,   -1,  -2,  -4,  -8, -10h, -20h, -40h
-
 ; A table for referencing channels that are used by both BGM and SFX, used to reference one another
 ; FM3 and FM4 have a gap between them because FM3 is 02h and FM4 is 04h
 ; (fm-2)<<1
@@ -583,6 +577,32 @@ zMusicTrackOffs:
 zSFXTrackOffs:
 	dw	zSFX_FM3, 0, zSFX_FM4, zSFX_FM5
 	dw	zSFX_PSG1, zSFX_PSG2, zSFX_PSG3
+; ---------------------------------------------------------------------------
+; 'jman2050' DAC decode lookup table
+	align 100h
+dpcmtbl macro v
+	rept 16
+	db v
+	endr
+	endm
+zDACDecodeTbl:
+	dpcmtbl  00h
+	dpcmtbl  01h
+	dpcmtbl  02h
+	dpcmtbl  04h
+	dpcmtbl  08h
+	dpcmtbl  10h
+	dpcmtbl  20h
+	dpcmtbl  40h
+	dpcmtbl  80h
+	dpcmtbl -01h
+	dpcmtbl -02h
+	dpcmtbl -04h
+	dpcmtbl -08h
+	dpcmtbl -10h
+	dpcmtbl -20h
+	dpcmtbl -40h
+
 ; ---------------------------------------------------------------------------
 zPlaySegaChant:
 	di
@@ -1322,12 +1342,10 @@ rwaaauh	defl rwaaauh+1
 rwaaauh	defl 100h-((zCommandIndexEnd-zCommandIndex)/2)
 zCommandIndex:
 	valfor68k  CmdID__First,rwaaauh
-	cmdinclude zPlaySegaChant,	cmdid_Sega
-	cmdinclude zStopSoundEffects,	cmdid_StopSFX
-	cmdinclude zFadeOutMusic,	cmdid_FadeOut
-	cmdinclude zSpeedUpMusic,	cmdid_SpeedUp
-	cmdinclude zSlowDownMusic,	cmdid_SlowDown
-	cmdinclude zStopSoundAndMusic,	cmdid_Stop
+	cmdinclude zPlaySegaChant	,cmdid_Sega
+	cmdinclude zStopSoundEffects	,cmdid_StopSFX
+	cmdinclude zFadeOutMusic	,cmdid_FadeOut
+	cmdinclude zStopSoundAndMusic	,cmdid_Stop
 	valfor68k  CmdID__End,rwaaauh
 zCommandIndexEnd:
 ; ---------------------------------------------------------------------------
@@ -1383,7 +1401,7 @@ zBGMLoad:
 	ld	e,a						; Transform 'a' into 16-bit de
 	ld	d,0
 	ld	hl,(zDataTable.bgmplaylist)			; Get address of the zMasterPlaylist
-	rept 5
+	rept 4
 	add	hl,de
 	endr
 	ld	a,(hl)						; Get "fixed" index
@@ -1392,10 +1410,6 @@ zBGMLoad:
 	ccf							; Invert carry flag from overflow
 	sbc	a,a						; ...so that this sets a to FFh if bit 7 of original a was clear (allow PAL double-update), zero otherwise (do not allow PAL double-update)
 	ld	(zAbsVar.IsPalFlag),a
-	inc	hl
-
-	ld	a,(hl)						; Get value at this location -> 'a'
-	ld	(zAbsVar.TempoTurbo),a				; Store 'a' here (provides an alternate tempo or something for speed up mode)
 	inc	hl
 
 	ld	a,(hl)						; Get "fixed" index
@@ -1416,14 +1430,6 @@ zBGMLoad:
 	ld	(.fminst),de					; (self-modifying code)
 
 	ld	a,(ix+5)					; Get main tempo value
-	ld	(zAbsVar.TempoMod),a				; Store it
-	ld	b,a						; tempo -> 'b'
-	ld	a,(zAbsVar.SpeedUpFlag)				; Get found speed shoe flag (preloaded before this)
-	or	a						; test it
-	ld	a,b						; Restore normal song tempo
-	jr	Z,.nospeed					; if the speed shoe flag was zero, skip this step
-	ld	a,(zAbsVar.TempoTurbo)				; Put the corresponding speed shoe tempo for song
-.nospeed:
 	ld	(zAbsVar.CurrentTempo),a			; Current tempo for TempoWait
 	ld	(zAbsVar.TempoTimeout),a			; Tempo accumulator for TempoWait
 	ld	a,5
@@ -1776,7 +1782,8 @@ zFadeOutMusic:
 	ld	a,28h
 	ld	(zAbsVar.FadeOutCounter),a			; Set total frames to decrease volume over
 	xor	a
-	ld	(zAbsVar.SpeedUpFlag),a				; No speed shoe tempo?
+	ld	(zSongExtra.Speed),a				; No speed shoe tempo?
+	ld	(zSongExtra.SpeedUpd),a				; No speed shoe tempo?
 ;	xor	a
 	ld	(zSongDAC.PlaybackControl),a			; Stop DAC track (can't fade it)
 	ret
@@ -1911,7 +1918,6 @@ zInitMusicPlayback:
 	; Save some queues/flags:
 	ld	ix,zAbsVar
 	ld	b,(ix+zVar.FadeInCounter)
-	ld	c,(ix+zVar.SpeedUpFlag)
 	push	bc
 	; The following clears all playback memory and non-SFX tracks
 	ld	hl,zMusClearRange
@@ -1921,7 +1927,6 @@ zInitMusicPlayback:
 	ldir
 	; Restore those queue/flags:
 	pop	bc
-	ld	(ix+zVar.SpeedUpFlag),c
 	ld	(ix+zVar.FadeInCounter),b
 
 	; If a music file's header doesn't define each and every channel, they
@@ -1941,43 +1946,6 @@ zInitMusicPlayback:
 
 	ret
 ; End of function zInitMusicPlayback
-
-; ---------------------------------------------------------------------------
-; zloc_BBE:
-; increases the tempo of the music
-zSpeedUpMusic:
-	ld	b,80h
-	ld	a,(zPlaying1upFlag)
-	or	a
-	ld	a,(zAbsVar.TempoTurbo)
-	jr	Z,zSetTempo
-	jr	zSetTempo_1up
-
-; ===========================================================================
-; zloc_BCB:
-; returns the music tempo to normal
-zSlowDownMusic:
-	ld	b,0
-	ld	a,(zPlaying1upFlag)
-	or	a
-	ld	a,(zAbsVar.TempoMod)
-	jr	Z,zSetTempo
-	jr	zSetTempo_1up
-
-; ===========================================================================
-; helper routines for changing the tempo
-zSetTempo:
-	ld	(zAbsVar.CurrentTempo),a			; Store new tempo value 
-	ld	a,b
-	ld	(zAbsVar.SpeedUpFlag),a
-	ret
-; ---------------------------------------------------------------------------
-;zloc_BE0
-zSetTempo_1up:
-	ld	(zSaveVar.CurrentTempo),a			; Store new tempo value 
-	ld	a,b
-	ld	(zSaveVar.SpeedUpFlag),a
-	ret
 
 ; ||||||||||||||| S U B	R O U T	I N E |||||||||||||||||||||||||||||||||||||||
 
@@ -2521,7 +2489,7 @@ cfFadeInToPrevious:
 	pop	bc						; remove loop counter for zUpdateMusic/Sound
 	pop	bc						; remove return address for zUpdateMusic/Sound
 	pop	bc						; remove return address for the interrupt
-								; we're now outside of the interrupt, within zWriteToDAC
+								; we're now outside of the interrupt, within zRunDriver
 								; we'll rectify this later
 	; This performs a "massive" restoration of all of the current 
 	; track positions as they were prior to 1-up BGM

@@ -52,9 +52,9 @@ zMakeRate macro rate,cycle
 	dc.b  1+(3579545/(\rate\)-(\cycle\)+(13/2))/13
 	endm
 
-bgmdef macro palslowflag,speedtempo,label,id
+bgmdef macro palslowflag,label,id
 \id\	equ MusID__First+(((*)-zMasterPlaylist)/4)
-	dc.b  \palslowflag\<<7|0<<6,\speedtempo
+	dc.b  \palslowflag\<<7|0<<6
 	zMakeBnk \label
 	zMakePtr \label
 	endm
@@ -152,9 +152,9 @@ zMakeRate macro rate,cycle
 	dc.b  1+(3579545/(\rate\)-(\cycle\)+(13/2))/13
 	endm
 
-bgmdef macro palslowflag,speedtempo,label,id
+bgmdef macro palslowflag,label,id
 id	equ MusID__First+(((*)-zMasterPlaylist)/4)
-	dc.b palslowflag<<7|0<<6,speedtempo
+	dc.b palslowflag<<7|0<<6
 	zMakeBnk label
 	zMakePtr label
 	endm

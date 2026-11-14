@@ -193,10 +193,20 @@ nAb7		equ nGs7
 nA7		equ $DE
 nAs7		equ $DF
 nBb7		equ nAs7
-
+; PSG3
 nMaxPSG		equ nBb6-12
 nMaxPSG1	equ nBb6
 nMaxPSG2	equ nB6
+; PSG4
+nnRst		equ $80
+nnP10		equ $81
+nnP20		equ $82
+nnP40		equ $83
+nnPPSG3		equ $84
+nnN10		equ $85
+nnN20		equ $86
+nnN40		equ $87
+nnNPSG3		equ $88
 ; ---------------------------------------------------------------------------------------------
 ; Channel IDs for SFX
 cPSG1		equ $80
@@ -401,6 +411,9 @@ smpsAlterPitch macro val
 	endm
 
 ; modulation
+smpsDetune macro val
+	dc.b	$E1,val
+	endm
 smpsAlterNote macro val
 	dc.b	$E1,val
 	endm
@@ -438,6 +451,9 @@ smpsJump macro loc
 smpsLoop macro index,loops,loc
 	dc.b	$F7,index,loops
 	makeSequencePointer loc
+	endm
+smpsLoopSet macro index,loops
+	dc.b	$FB,index,loops
 	endm
 smpsCall macro loc
 	dc.b	$F8
@@ -558,6 +574,14 @@ smpsSSGEG macro op1,op2,op3,op4
 ; ---------------------------------------------------------------------------------------------
 ; Macros for FM instruments
 ; ---------------------------------------------------------------------------------------------
+; Define an ID for the instrument, useful for UVBs but not required
+smpsVcIdentifier macro startoflist,id
+	if ((*)-startoflist)#25<>0
+	fatal "FM instrument isn't within an expected modulo of 25"
+	endif
+id	equ ((*)-startoflist)/25
+	endm
+
 ; Voices - Feedback
 smpsVcFeedback macro val
 vcFeedback	set val

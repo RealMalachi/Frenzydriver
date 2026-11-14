@@ -121,6 +121,7 @@ zDACUpdating:		defs 1		; Set to FFh while DAC is updating, then back to 00h
 zPcmQueue:		defs 1
 zPcmBank:		defs 1
 zPcmSfxFlag:		defs 1
+zLastNoise:		defs 1
 
 zClearRange:
 zPlaying1upFlag:	defs 1
@@ -145,6 +146,7 @@ zSongFM6:		zTrack
 zSongPSG1:		zTrack
 zSongPSG2:		zTrack
 zSongPSG3:		zTrack
+zSongPSG4:		zTrack
 zTracksEnd:
 zSongExtra:		zTrackExt
 
@@ -170,6 +172,7 @@ zSaveSongFM6:		zTrack
 zSaveSongPSG1:		zTrack
 zSaveSongPSG2:		zTrack
 zSaveSongPSG3:		zTrack
+zSaveSongPSG4:		zTrack
 zTracksSaveEnd:
 
 zRamEnd:
@@ -573,10 +576,10 @@ zGetMusicTrackOffset:
 ; (psg>>4)&0Fh
 zMusicTrackOffs:
 	dw	zSongFM3, 0, zSongFM4, zSongFM5
-	dw	zSongPSG1, zSongPSG2, zSongPSG3
+	dw	zSongPSG1, zSongPSG2, zSongPSG3, zSongPSG4
 zSFXTrackOffs:
 	dw	zSFX_FM3, 0, zSFX_FM4, zSFX_FM5
-	dw	zSFX_PSG1, zSFX_PSG2, zSFX_PSG3
+	dw	zSFX_PSG1, zSFX_PSG2, zSFX_PSG3, 0;zSFX_PSG4
 ; ---------------------------------------------------------------------------
 ; 'jman2050' DAC decode lookup table
 	align 100h
@@ -602,7 +605,6 @@ zDACDecodeTbl:
 	dpcmtbl -10h
 	dpcmtbl -20h
 	dpcmtbl -40h
-
 ; ---------------------------------------------------------------------------
 zPlaySegaChant:
 	di
@@ -1050,6 +1052,11 @@ zPSGDoNext:
 zPSGSetFreq:
 	sub	81h						; a = a-$81 (zero-based index from lowest note)
 	jr	C,.rest						; If carry (can only be $80) this is a rest!
+	ld	c,a
+	ld	a,(ix+zTrack.VoiceControl)
+	cp	0E0h
+	ld	a,c
+	jr	Z,.psg4
 	add	a,(ix+zTrack.Transpose)				; Add current channel transpose to note
 	add	a,(iy+zTrackExt.Pitch)				; Add shared pitch
 	add	a,a						; Multiply note value by 2
@@ -1060,9 +1067,15 @@ zPSGSetFreq:
 	sub	d
 	ld	(.freq+3),a					; (self-modifying code)
 .freq:	ld	de,(zPSGFrequencies)				; Store frequency into "de" (self-modified code)
+.setfreq:
 	ld	(ix+zTrack.FreqLow),e
 	ld	(ix+zTrack.FreqHigh),d
 	ret
+.psg4:
+	add	0E0h
+	ld	e,a
+	ld	d,0
+	jr	.setfreq
 .rest:
 	; If you get here, we're doing a PSG rest
 	set	playback_resting,(ix+zTrack.PlaybackControl)	; Set "track in rest" bit
@@ -1086,6 +1099,9 @@ zPSGUpdateFreq:
 	ld	a,(ix+zTrack.PlaybackControl)
 	and	1<<playback_resting|1<<playback_override
 	ret	NZ
+	ld	a,(ix+zTrack.VoiceControl)
+	cp	0E0h
+	jr	Z,.psg4
 	call	zGetFrequency
 	ld	a,l						; Frequency low byte -> 'a'
 	and	0Fh						; Keep only lower four bits
@@ -1100,25 +1116,34 @@ zPSGUpdateFreq:
 	rra							; in C, basically (hl >> 4) (except possible garbage from the rotation in upper bits)
 	and	3Fh						; keep only lower 6 bits (PSG d4-d9)
 	ld	(zPSG),a					; Write other frequency byte to PSG!
+	ld	a,(ix+zTrack.PSGNoise)				; Also send noise if necessary
+	or	a
+	ret	Z
+.send:	ld	hl,zLastNoise					; Compare it to the last one
+	cp	(hl)
+	ret	Z
+	ld	(hl),a
+	ld	(zPSG),a
 	ret
+.psg4:	ld	a,(ix+zTrack.FreqLow)
+	jr	.send
 ; End of function zPSGPrepareNote
 
 
 ; ||||||||||||||| S U B	R O U T	I N E |||||||||||||||||||||||||||||||||||||||
 
 
+; zloc_522:
+zVolEnvHold:
+	; This just decrements the flutter to keep it in place; no more volume changes in this list
+	dec	(ix+zTrack.VolEnvIndex)				; Put index back (before final volume value)
+	jr	zUpdateVolEnv_cont				; Loop back and update volume 
+
 ;zsub_4CA
 zUpdateVolEnv:
 	ld	a,(ix+zTrack.VolEnvID)				; Get current PSG tone
 	or	a						; Test if it's zero
 	ret	Z						; If it is, return!
-	; Otherwise, fall into zDoVolume...
-
-
-; ||||||||||||||| S U B	R O U T	I N E |||||||||||||||||||||||||||||||||||||||
-
-
-;zsub_4CF
 zDoVolume:
 	ld	b,(ix+zTrack.Volume)				; Channel volume -> 'b'
 
@@ -1145,10 +1170,8 @@ zUpdateVolEnv_cont:
 
 	ld	a,(hl)						; Get volume envelope
 	or	a						; test byte from before
-	jp	P,.positivevol					; Is it a positive value?
 	cp	80h						; Check if it's 80h (terminator to the "flutter" list)
 	jr	Z,zVolEnvHold					; If it is, then jump to zVolEnvHold (which just keeps at this flutter value, i.e. no more changes in volume)
-.positivevol:
 	inc	(ix+zTrack.VolEnvIndex)				; Increment index
 	call	zAddCapVolume
 
@@ -1202,12 +1225,6 @@ zAddCapVolume:
 	ret	NC
 	ld	b,0FFh
 	ret
-; ---------------------------------------------------------------------------
-; zloc_522:
-zVolEnvHold:
-	; This just decrements the flutter to keep it in place; no more volume changes in this list
-	dec	(ix+zTrack.VolEnvIndex)				; Put index back (before final volume value)
-	jr	zUpdateVolEnv_cont				; Loop back and update volume 
 ; End of function zDoVolume
 
 
@@ -1238,7 +1255,7 @@ zFMFrequencies:
 ;zloc_5F4
 zPSGSilenceAll:
 	ld	hl,zPSG		; PSG reg
-	ld	(hl),9Fh	; Stop channel 0
+	ld	(hl),09Fh	; Stop channel 0
 	ld	(hl),0BFh	; Stop channel 1
 	ld	(hl),0DFh	; Stop channel 2
 	ld	(hl),0FFh	; Stop noise channel
@@ -1569,14 +1586,6 @@ zBGMLoad:
 	pop	hl						; skip BGM update
 	jp	zSkipMusicUpdate
 ; ---------------------------------------------------------------------------
-; FM channel assignment bits
-;zbyte_916
-zFMDACInitBytes:	db    6,   0,   1,   2,   4,   5,   6	; first byte is for DAC; then notice the 0, 1, 2 then 4, 5, 6; this is the gap between parts I and II for YM2612 port writes
-
-; Default values for PSG tracks
-;zbyte_91D
-zPSGInitBytes:	db  80h,0A0h,0C0h				; Specifically, these configure writes to the PSG port for each channel
-
 ; zloc_920:
 zPlaySound_KillSFXPrio:
 	xor	a
@@ -1760,11 +1769,6 @@ zStopSoundEffects:
 	pop	ix
 	res	playback_override,(ix+zTrack.PlaybackControl)	; tell this track it is is no longer overridden by SFX!
 	set	playback_resting,(ix+zTrack.PlaybackControl)	; Set track to rest
-	ld	a,(ix+zTrack.PSGNoise)				; Get PSG noise setting
-	or	a						; Is this a PSG 3 noise (not tone) track?
-	jr	Z,.psg3						; If it isn't, don't do next part (non-PSG Noise doesn't restore)
-	ld	(zPSG),a					; Write it to PSG
-.psg3:
 	pop	ix
 .fmcont:
 	ld	de,zTrack.len
@@ -1890,9 +1894,6 @@ zClearTrackPlaybackMem:
 	rst	zWriteFMI					; Write it!
 	ld	a,c						; 80h -> 'a'
 	ld	(zAbsVar.DACEnabled),a				; Store that to DAC Enabled byte
-	ld	a,27h						; Channel 3 special settings
-	ld	c,0						; All clear
-	rst	zWriteFMI					; Write it!
 	; This performs a full clear across all track/playback memory
 	ld	hl,zClearRange
 	ld	de,zClearRange+1
@@ -1936,15 +1937,19 @@ zInitMusicPlayback:
 	ld	ix,zTracksStart					; Start at the first music track...
 	ld	b,(zTracksEnd-zTracksStart)/zTrack.len		; ...and continue to the last
 	ld	de,zTrack.len
-	ld	hl,zFMDACInitBytes				; This continues into zPSGInitBytes
-.loop:
-	ld	a,(hl)
+	ld	hl,zMusicInitBytes				; This continues into zPSGInitBytes
+.loop:	ld	a,(hl)
 	inc	hl
 	ld	(ix+zTrack.VoiceControl),a			; Set channel type while we're at it, so subroutines understand what the track is
 	add	ix,de						; Next track
 	djnz	.loop						; loop for all channels
 
 	ret
+zMusicInitBytes:
+	db  6			; DAC
+	db  0,1,2		; FMI
+	db  4,5,6		; FMII
+	db  080h,0A0h,0C0h,0E0h	; PSG
 ; End of function zInitMusicPlayback
 
 ; ||||||||||||||| S U B	R O U T	I N E |||||||||||||||||||||||||||||||||||||||
@@ -2116,6 +2121,7 @@ zCoordFlag:
 	dw	cfJumpToGosub		; F8
 	dw	cfJumpReturn		; F9
 	dw	cfResetSpindashRev	; FA
+	dw	cfSetRepeatAmount	; FB
 ; ---------------------------------------------------------------------------
 
 ; (via Saxman's doc): panning, AMS, FMS  
@@ -2476,13 +2482,15 @@ cfStopTrack:
 	pop	ix
 	res	playback_override,(hl)				; Clear SFX is overriding this track from playback control
 	set	playback_resting,(hl)				; Set track as resting bit
-	ld	a,(ix+zTrack.PSGNoise)				; Get PSG noise setting
-	or	a						; Is this a PSG 3 noise (not tone) track?
-	jr	Z,.psg3						; If it isn't, don't do next part (non-PSG Noise doesn't restore)
-	ld	(zPSG),a					; Write it to PSG
-.psg3:
 	pop	ix						; restore 'ix'
+	; Restore PSG4 if necessary
+	ld	a,(ix+zTrack.PSGNoise)
+	or	a
+	ret	Z
+	ld	hl,zSongPSG4.PlaybackControl
+	res	playback_override,(hl)
 	ret
+
 ; Fade-in to previous song
 cfFadeInToPrevious:
 	; Quit running all the sequences to avoid accidental updates
@@ -2535,11 +2543,6 @@ cfFadeInToPrevious:
 	ld	a,(ix+zTrack.Volume)				; Get channel volume
 	add	a,c						; Apply current fade value
 	ld	(ix+zTrack.Volume),a				; Store it back
-	ld	a,(ix+zTrack.PSGNoise)				; Restore PSG noise type
-	or	a						; Is this the Noise Channel?
-	jr	Z,.psg3						; If not, branch
-	ld	(zPSG),a					; Restore Noise setting
-.psg3:
 .psgnop:
 	ld	de,zTrack.len
 	add	ix,de						; Next track
@@ -2565,15 +2568,30 @@ cfSetPSGNoise:
 	ld	(ix+zTrack.PSGNoise),a				; Save PSG noise setting for restoration if SFX override sit
 	or	a
 	jr	Z,.psg3
+; override PSG4
+	ld	a,(zDoSFXFlag)
+	or	a
+	jr	Z,.psg4bgm
+	ld	de,zSongPSG4.PlaybackControl
+	ld	a,(de)
+	or	1<<playback_override
+	ld	(de),a
+.psg4bgm:
 	bit	playback_override,(ix+zTrack.PlaybackControl)	; If SFX is currently overriding it, don't actually set it!
 	ret	NZ
-	ld	c,a
 	ld	a,0DFh						; mute psg3
 	ld	(zPSG),a
-	ld	a,c
-	ld	(zPSG),a					; set noise mode
 	ret
 .psg3:
+; stop overriding PSG4
+	ld	a,(zDoSFXFlag)
+	or	a
+	jr	Z,.psg3bgm
+	ld	de,zSongPSG4.PlaybackControl
+	ld	a,(de)
+	and	~(1<<playback_override)
+	ld	(de),a
+.psg3bgm:
 	bit	playback_override,(ix+zTrack.PlaybackControl)	; If SFX is currently overriding it, don't actually set it!
 	ret	NZ
 	ld	a,0FFh						; mute noise
@@ -2643,6 +2661,19 @@ cfRepeatAtPos:
 	; If you get here, the loop terminated; just bypass the loop jump address
 	inc	hl
 	inc	hl
+	ret
+
+cfSetRepeatAmount:
+								; a = index
+	add	a,zTrack.LoopCounters				; Add base location of loop counters to index
+	add	a,ixl						; de = seqram+(loc+index)
+	ld	e,a
+	adc	a,ixh
+	sub	e
+	ld	d,a
+	ld	a,(hl)						; Get number of repeats
+	inc	hl
+	ld	(de),a						; Set loop amount
 	ret
 ; ---------------------------------------------------------------------------
 

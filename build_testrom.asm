@@ -513,11 +513,11 @@ CallAPI:
 		bra.w	.guarddriver
 		bra.w	.unguarddriver
 		bra.w	.setuppianoroll
-		bra.w	.playcdda
 		bra.w	.pause
 		bra.w	.resume
 		bra.w	.bgmvol
 		bra.w	.bgmpitch
+		bra.w	.bgmspeed
 .lute:
 
 .initdriver:
@@ -540,8 +540,6 @@ CallAPI:
 		rts
 .setuppianoroll:
 		rts
-.playcdda:
-		rts
 .pause:
 		jmp	SmpsPause
 .resume:
@@ -552,6 +550,9 @@ CallAPI:
 .bgmpitch:
 		move.w	v_miscparam,d0
 		jmp	SmpsPitch
+.bgmspeed:
+		move.w	v_miscparam,d0
+		jmp	SmpsSpeed
 
 CallShortcut:
 		rts
@@ -811,11 +812,11 @@ ScreenText:
 		dc.l .a_guard
 		dc.l .a_unguard
 		dc.l .a_piano
-		dc.l .a_cdda
 		dc.l .a_pause
 		dc.l .a_resume
 		dc.l .a_bgmvol
 		dc.l .a_bgmpitch
+		dc.l .a_bgmspeed
 .shortcut:
 		dc.l .s_stopall
 		dc.l .s_stopbgm
@@ -874,11 +875,11 @@ ScreenText:
 .a_guard:	dctxt .amax,"GuardDriver"
 .a_unguard:	dctxt .amax,"UnguardDriver"
 .a_piano:	dctxt .amax,"SetupPianoRoll"
-.a_cdda:	dctxt .amax,"PlayCDDA"
 .a_pause:	dctxt .amax,"PauseDriver"
 .a_resume:	dctxt .amax,"ResumeDriver"
 .a_bgmpitch:	dctxt .amax,"SetBGMPitch"
 .a_bgmvol:	dctxt .amax,"SetBGMVolume"
+.a_bgmspeed:	dctxt .amax,"SetBGMSpeed"
 
 .smax		equ 15
 .s_stopall:	dctxt .smax,"Stop All"

@@ -114,13 +114,13 @@ zMasterPlaylist:
 MusID__End	equ MusID__First+(((*)-zMasterPlaylist)/4)
 
 zDACPtrTbl:
-		pcmdef Kick,8250,dKick
-		pcmdef Snare,24000,dSnare
-		pcmdef Clap,17000,dClap
-		pcmdef Scratch,15000,dScratch
+		pcmdef Kick,8250,dKick,pcmid_Kick
+		pcmdef Snare,24000,dSnare,pcmid_Snare
+		pcmdef Clap,17000,dClap,pcmid_Clap
+		pcmdef Scratch,15000,dScratch,pcmid_Scratch
 		pcmdef Timpani,9750,dHiTimpani
 		pcmdef Timpani,8750,dMidTimpani
-		pcmdef Timpani,7500,dTimpani
+		pcmdef Timpani,7500,dTimpani,pcmid_Timpani
 		pcmdef Timpani,7250,dLowTimpani
 		pcmdef Timpani,7000,dVLowTimpani
 		pcmdef Tom,23000,dMidTom	; look at the Hz rates and tell me with a straight face that the IDs are accurate

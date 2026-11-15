@@ -63,8 +63,11 @@ sfxdef macro prio,label,id
 	dc.b \prio\
 	zMakePtr \label
 	endm
-pcmdef macro label,rate,id
-\id\	equ $81+(((*)-zDACPtrTbl)/6)
+pcmdef macro label,rate,seqid,pcmid
+\seqid\	equ $81+(((*)-zDACPtrTbl)/6)
+	if narg>=4
+\pcmid\	equ 1+(((*)-zDACPtrTbl)/6)
+	endif
 	zMakeBnk SMPSPCM_\label
 	zMakeRate \rate,smps_dpcmcycle
 	zMakeLEW SMPSPCM_\label\_End-SMPSPCM_\label
@@ -163,8 +166,11 @@ id	equ SndID__First+(((*)-SoundIndex)/3)
 	dc.b prio
 	zMakePtr label
 	endm
-pcmdef macro label,rate,id
-id	equ $81+(((*)-zDACPtrTbl)/6)
+pcmdef macro label,rate,seqid,pcmid
+seqid	equ $81+(((*)-zDACPtrTbl)/6)
+	if ARGCOUNT>=4
+pcmid	equ 1+(((*)-zDACPtrTbl)/6)
+	endif
 	zMakeBnk SMPSPCM_label
 	zMakeRate rate,smps_dpcmcycle
 	zMakeLEW SMPSPCM_label_End-SMPSPCM_label

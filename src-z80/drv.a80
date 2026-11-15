@@ -1,6 +1,8 @@
 	device NOSLOT64K
 ; ---------------------------------------------------------------------------
 __debug		equ 0
+__revfreq	equ 0
+; ---------------------------------------------------------------------------
 zYM2612_Status	equ $4000
 zYM2612_A0	equ $4000
 zYM2612_D0	equ $4001
@@ -42,7 +44,7 @@ DataPointerHigh:	defb	; Track's position high byte
 ;DataBank:		defb	; Tracks position rom bank
 Transpose:		defb	; Transpose (from coord flag E9)
 Volume:			defb	; channel volume
-ModulationCtrl:		defb	; 0 means no modulation, bit 7 set means use modalgo
+ModulationCtrl:		defb	; 0 means no modulation, bit 7 set means use modalgo (80h is type 1, 81h is type 2)
 VolEnvID:		defb	; 
 
 VolEnvIndex:		defb	; 
@@ -122,12 +124,14 @@ zPcmQueue:		defs 1
 zPcmBank:		defs 1
 zPcmSfxFlag:		defs 1
 zLastNoise:		defs 1
+zDoubleUpdate:		defs 1
+zPalModeByte:		defs 1
 
 zClearRange:
 zPlaying1upFlag:	defs 1
 zSpindashTimer:		defs 1
 zSpindashIndex:		defs 1
-zStopMusic:		defs 1		; 0 = playing, 1 = paused, 7Fh = pausing, 80h = resuming
+zPauseFlag:		defs 1		; 0 = playing, 1 = paused, 7Fh = pausing, 80h = resuming
 zSFXPriorityVal:	defs 1
 
 zMusClearRange:
@@ -176,15 +180,18 @@ zSaveSongPSG4:		zTrack
 zTracksSaveEnd:
 
 zRamEnd:
+	valfor68k smps_palflag		,zPalModeByte
 	valfor68k smps_commbyte		,zCommunication
 	valfor68k smps_queue1		,zQueueSlot1
 	valfor68k smps_queue2		,zQueueSlot2
 	valfor68k smps_queue3		,zQueueSlot3
 	valfor68k smps_pcmqueue		,zPcmQueue
 	valfor68k smps_pcmsfxflag	,zPcmSfxFlag
-	valfor68k smps_pauseflag	,zStopMusic
+	valfor68k smps_pauseflag	,zPauseFlag
 	valfor68k smps_musicpitch	,zSongExtra.Pitch
 	valfor68k smps_musicvol		,zSongExtra.Volume
+	valfor68k smps_musicspeed	,zSongExtra.Speed
+	valfor68k smps_musicspeedupd	,zSongExtra.SpeedUpd
 
 		STRUCT zData
 bgmplaylist	defw
@@ -210,8 +217,6 @@ zEntryPoint:
 	di
 	ld	sp,zStack
 	jp	zInitDriver
-zPalModeByte:	db 0
-	valfor68k smps_palflag		,zPalModeByte
 ; ---------------------------------------------------------------------------
 	rstalign
 zWriteFMIorII:
@@ -239,190 +244,12 @@ zWriteFMII:
 	pop	af
 	ret
 ; ---------------------------------------------------------------------------
-zUpdateSequencer:
-	exx							; Effectively backs up 'bc', 'de', and 'hl'
-	ld	a,27h						; rest timer B
-	ld	c,2Fh
-	rst	zWriteFMI
-
-	if __debug
-	ld	a,2Ah
-	ld	c,00h
-	rst	zWriteFMI
-	endif
-
-	call	zPauseMusic
-	ld	ix,zAbsVar
-	ld	a,(zAbsVar.FadeOutCounter)
-	or	a
-	call	NZ,zUpdateFadeout				; ix = zAbsVar
-	ld	a,(zAbsVar.FadeInFlag)
-	or	a
-	call	NZ,zUpdateFadeIn				; ix = zAbsVar
-	ld	a,(zSpindashTimer)
-	or	a
-	jr	Z,.spindash					; if the spindash counter is already 0, branch
-	dec	a						; decrease the spindash sound playing counter
-	ld	(zSpindashTimer),a
-.spindash:
-	call	zCycleQueue
-	call	zUpdateMusic
-zSkipMusicUpdate:
-	call	zUpdateSound
-
-	; Now we update the DAC... this only does anything if there's a new DAC 
-	; sound to be played.  This is called after updating the DAC track.
-	; Otherwise it just mucks with the timing loop, forcing an update.
-zExitSequencer:
-	if __debug
-	ld	a,2Ah
-	ld	c,80h
-	rst	zWriteFMI
-	else
-	ld	a,2Ah
-	ld	(zYM2612_A0),a
-	endif
-	ld	iyh,zDACDecodeTbl>>8				; UNDOC
-
-	ld	a,(zPcmQueue)					; Get currently playing DAC sound
-	or	a
-	jr	NZ,.newdac					; If one is queued, go to it!
-	ld	a,(zPcmBank)
-	call	zBankSwitch					; Bankswitch to the DAC data
-	exx
-	ld	b,1
-	ret
-.newdac:
-	; If you get here, it's time to start a new DAC sound...
-;	exx
-	pop	de						; restart sample playback
-	jp	zRunDriver.sample
-; End of function zUpdateSequencer
-
-
-; ||||||||||||||| S U B	R O U T	I N E |||||||||||||||||||||||||||||||||||||||
-
-; Updates all tracks; queues notes and durations!
-
-;zsub_110
-zUpdateMusic:
-	; If the system is PAL and the song doesn't opt out, update the song at 1.2x speed
-;	ld	hl,zPalModeByte					; Get zPalModeByte
-;	ld	a,(zAbsVar.IsPalFlag)				; Get IsPalFlag
-;	and	(hl)						; 'And' them together
-;	jr	Z,.nah						; If it comes out zero, do nothing
-;	ld	hl,zPALUpdTick					; Tick down double update timer
-;	dec	(hl)
-;	jr	NZ,.nah
-;	ld	(hl),5
-;	ret
-;.nah:
-	call	zBankSwitchToMusic
-	xor	a						; Clear 'a'
-	ld	(zDoSFXFlag),a					; Not updating SFX (updating music)
-	ld	iy,zSongExtra
-.update:
-	; S3K tempo algorithm
-	; Tempo works as divisions of the 60Hz clock
-	; (there is a separate fix supplied for PAL that "kind of" keeps it on track)
-	; Every time the internal music clock overflows, it's halted by one tick
-	; So a tempo of 00h will update every frame, 80h will update every 2 frames, CCh will update every 5 out of 6 frames
-	ld	a,(zAbsVar.CurrentTempo)
-	ld	hl,zAbsVar.TempoTimeout
-	add	a,(hl)
-	ld	(hl),a
-	jr	NC,.exit					; If addition doesn't overflow, exit
-	ld	hl,zTracksStart+zTrack.DurationTimeout		; Start at first track's delay counter (counting up to delay)
-	ld	de,zTrack.len					; Offset between tracks 
-	ld	b,(zTracksEnd-zTracksStart)/zTrack.len		; Loop for all tracks
-.loop:	inc	(hl)						; Increasing delay tick counter to target
-	add	hl,de						; Next track...
-	djnz	.loop
-.exit:
-	ld	ix,zTracksStart
-
-	ld	a,0FFh
-	ld	(zDACUpdating),a
-
-	ld	b,(zSongFM1-zSongDAC)/zTrack.len
-.dacloop:
-	push	bc
-	bit	playback_playing,(ix+zTrack.PlaybackControl)
-	call	NZ,zDACUpdateTrack
-	pop	bc
-	ld	de,zTrack.len
-	add	ix,de
-	djnz	.dacloop
-
-	xor	a
-	ld	(zDACUpdating),a
-
-	ld	b,(zSongPSG1-zSongFM1)/zTrack.len
-.fmloop:
-	push	bc
-	bit	playback_playing,(ix+zTrack.PlaybackControl)
-	call	NZ,zFMUpdateTrack
-	pop	bc
-	ld	de,zTrack.len
-	add	ix,de
-	djnz	.fmloop
-
-	ld	b,(zTracksEnd-zSongPSG1)/zTrack.len
-.psgloop:
-	push	bc
-	bit	playback_playing,(ix+zTrack.PlaybackControl)
-	call	NZ,zPSGUpdateTrack
-	pop	bc
-	ld	de,zTrack.len
-	add	ix,de
-	djnz	.psgloop
-
-	ld	a,(zPlaying1upFlag)
-	or	a
-	ret	NZ
-	ld	a,(iy+zTrackExt.Speed)
-	or	a
-	ret	Z
-	dec	(iy+zTrackExt.SpeedUpd)
-	ret	NC
-	ld	(iy+zTrackExt.SpeedUpd),a
-	jp	.update
-; ---------------------------------------------------------------------------
-zUpdateSound:
-	call	zBankSwitchToSFX				; Bank switch to sound effects
-	ld	a,1						; Updating SFX
-	ld	(zDoSFXFlag),a
-	ld	iy,zSFX_Extra
-	ld	ix,zTracksSFXStart
-
-	ld	b,(zSFX_PSG1-zSFX_FM3)/zTrack.len
-.fmloop:
-	push	bc
-	bit	playback_playing,(ix+zTrack.PlaybackControl)
-	call	NZ,zFMUpdateTrack
-	pop	bc
-	ld	de,zTrack.len
-	add	ix,de
-	djnz	.fmloop
-
-	ld	b,(zTracksSFXEnd-zSFX_PSG1)/zTrack.len
-.psgloop:
-	push	bc
-	bit	playback_playing,(ix+zTrack.PlaybackControl)
-	call	NZ,zPSGUpdateTrack
-	pop	bc
-	ld	de,zTrack.len
-	add	ix,de
-	djnz	.psgloop
-
-	ret
-; ---------------------------------------------------------------------------
 
 zInitDriver:
 	im	1
 	call	zClearTrackPlaybackMem
 	ld	a,26h			; timerB
-	ld	c,0C8h			; 60tps
+	ld	c,0E4h			; 120tps
 	rst	zWriteFMI
 	ld	a,27h			; rest timers
 	ld	c,3Fh
@@ -606,6 +433,194 @@ zDACDecodeTbl:
 	dpcmtbl -20h
 	dpcmtbl -40h
 ; ---------------------------------------------------------------------------
+zUpdateSequencer:
+	exx							; Effectively backs up 'bc', 'de', and 'hl'
+	ld	a,27h						; rest timer B
+	ld	c,2Fh
+	rst	zWriteFMI
+	if __debug
+	ld	a,2Ah
+	ld	c,00h
+	rst	zWriteFMI
+	endif
+
+	ld	a,(zDoubleUpdate)
+	xor	1
+	ld	(zDoubleUpdate),a
+
+	call	zPauseMusic
+	ld	ix,zAbsVar
+	ld	a,(zAbsVar.FadeOutCounter)
+	or	a
+	call	NZ,zUpdateFadeout				; ix = zAbsVar
+	ld	a,(zAbsVar.FadeInFlag)
+	or	a
+	call	NZ,zUpdateFadeIn				; ix = zAbsVar
+	ld	a,(zSpindashTimer)
+	or	a
+	jr	Z,.spindash					; if the spindash counter is already 0, branch
+	dec	a						; decrease the spindash sound playing counter
+	ld	(zSpindashTimer),a
+.spindash:
+	call	zCycleQueue
+	call	zUpdateMusic
+zSkipMusicUpdate:
+	call	zUpdateSound
+
+	; Now we update the DAC... this only does anything if there's a new DAC 
+	; sound to be played.  This is called after updating the DAC track.
+	; Otherwise it just mucks with the timing loop, forcing an update.
+zExitSequencer:
+	if __debug
+	ld	a,2Ah
+	ld	c,80h
+	rst	zWriteFMI
+	else
+	ld	a,2Ah
+	ld	(zYM2612_A0),a
+	endif
+	ld	iyh,zDACDecodeTbl>>8				; UNDOC
+
+	ld	a,(zPcmQueue)					; Get currently playing DAC sound
+	or	a
+	jr	NZ,.newdac					; If one is queued, go to it!
+	ld	a,(zPcmBank)
+	call	zBankSwitch					; Bankswitch to the DAC data
+	exx
+	ld	b,1
+	ret
+.newdac:
+	; If you get here, it's time to start a new DAC sound...
+;	exx
+	pop	de						; restart sample playback
+	jp	zRunDriver.sample
+; End of function zUpdateSequencer
+
+
+; ||||||||||||||| S U B	R O U T	I N E |||||||||||||||||||||||||||||||||||||||
+
+; Updates all tracks; queues notes and durations!
+
+;zsub_110
+zUpdateMusic:
+	ld	iy,zSongExtra
+	ld	a,(zDoubleUpdate)
+	or	a
+	jr	Z,.run
+	ld	a,(zPlaying1upFlag)
+	or	a
+	ret	NZ
+	ld	a,(iy+zTrackExt.Speed)
+	or	a
+	ret	Z
+	dec	(iy+zTrackExt.SpeedUpd)
+	ret	NZ
+	ld	(iy+zTrackExt.SpeedUpd),a
+.run:
+	; If the system is PAL and the song doesn't opt out, update the song at 1.2x speed
+;	ld	hl,zPalModeByte					; Get zPalModeByte
+;	ld	a,(zAbsVar.IsPalFlag)				; Get IsPalFlag
+;	and	(hl)						; 'And' them together
+;	jr	Z,.nah						; If it comes out zero, do nothing
+;	ld	hl,zPALUpdTick					; Tick down double update timer
+;	dec	(hl)
+;	jr	NZ,.nah
+;	ld	(hl),5
+;	ret
+;.nah:
+	call	zBankSwitchToMusic
+	xor	a						; Clear 'a'
+	ld	(zDoSFXFlag),a					; Not updating SFX (updating music)
+.update:
+	; S3K tempo algorithm
+	; Tempo works as divisions of the 60Hz clock
+	; (there is a separate fix supplied for PAL that "kind of" keeps it on track)
+	; Every time the internal music clock overflows, it's halted by one tick
+	; So a tempo of 00h will update every frame, 80h will update every 2 frames, CCh will update every 5 out of 6 frames
+	ld	a,(zAbsVar.CurrentTempo)
+	ld	hl,zAbsVar.TempoTimeout
+	add	a,(hl)
+	ld	(hl),a
+	jr	NC,.exit					; If addition doesn't overflow, exit
+	ld	hl,zTracksStart+zTrack.DurationTimeout		; Start at first track's delay counter (counting up to delay)
+	ld	de,zTrack.len					; Offset between tracks 
+	ld	b,(zTracksEnd-zTracksStart)/zTrack.len		; Loop for all tracks
+.loop:	inc	(hl)						; Increasing delay tick counter to target
+	add	hl,de						; Next track...
+	djnz	.loop
+.exit:
+	ld	ix,zTracksStart
+
+	ld	a,0FFh
+	ld	(zDACUpdating),a
+
+	ld	b,(zSongFM1-zSongDAC)/zTrack.len
+.dacloop:
+	push	bc
+	bit	playback_playing,(ix+zTrack.PlaybackControl)
+	call	NZ,zDACUpdateTrack
+	pop	bc
+	ld	de,zTrack.len
+	add	ix,de
+	djnz	.dacloop
+
+	xor	a
+	ld	(zDACUpdating),a
+
+	ld	b,(zSongPSG1-zSongFM1)/zTrack.len
+.fmloop:
+	push	bc
+	bit	playback_playing,(ix+zTrack.PlaybackControl)
+	call	NZ,zFMUpdateTrack
+	pop	bc
+	ld	de,zTrack.len
+	add	ix,de
+	djnz	.fmloop
+
+	ld	b,(zTracksEnd-zSongPSG1)/zTrack.len
+.psgloop:
+	push	bc
+	bit	playback_playing,(ix+zTrack.PlaybackControl)
+	call	NZ,zPSGUpdateTrack
+	pop	bc
+	ld	de,zTrack.len
+	add	ix,de
+	djnz	.psgloop
+
+	ret
+; ---------------------------------------------------------------------------
+zUpdateSound:
+	ld	a,(zDoubleUpdate)
+	or	a
+	ret	NZ
+	call	zBankSwitchToSFX				; Bank switch to sound effects
+	ld	a,1						; Updating SFX
+	ld	(zDoSFXFlag),a
+	ld	iy,zSFX_Extra
+	ld	ix,zTracksSFXStart
+
+	ld	b,(zSFX_PSG1-zSFX_FM3)/zTrack.len
+.fmloop:
+	push	bc
+	bit	playback_playing,(ix+zTrack.PlaybackControl)
+	call	NZ,zFMUpdateTrack
+	pop	bc
+	ld	de,zTrack.len
+	add	ix,de
+	djnz	.fmloop
+
+	ld	b,(zTracksSFXEnd-zSFX_PSG1)/zTrack.len
+.psgloop:
+	push	bc
+	bit	playback_playing,(ix+zTrack.PlaybackControl)
+	call	NZ,zPSGUpdateTrack
+	pop	bc
+	ld	de,zTrack.len
+	add	ix,de
+	djnz	.psgloop
+
+	ret
+; ---------------------------------------------------------------------------
 zPlaySegaChant:
 	di
 	ld	a,0B6h				; set DAC panning to mono
@@ -786,6 +801,10 @@ zFMSetFreq:
 	jr	Z,.rest						; If this is a rest, jump to zFMDoRest
 	add	a,(ix+zTrack.Transpose)				; Add current channel transpose
 	add	a,(iy+zTrackExt.Pitch)				; Add shared pitch
+	if __revfreq
+	neg
+	add	12*8
+	endif
 	add	a,a						; Offset into Frequency table...
 
 	ld	d,12*2						; 12 notes per octave
@@ -819,6 +838,11 @@ zFMSetFreq:
 	ld	(ix+zTrack.FreqLow),a				; Zero out FM Frequency
 	ld	(ix+zTrack.FreqHigh),a				; Zero out FM Frequency
 	ret
+; lookup table of FM note frequencies for instruments and sound effects
+; zbyte_534:
+zFMFrequencies:
+	dw 	025Eh,0284h,02ABh,02D3h,02FEh,032Dh,035Ch,038Fh,03C5h,03FFh,043Ch,047Ch
+; ---------------------------------------------------------------------------
 
 ; ||||||||||||||| S U B	R O U T	I N E |||||||||||||||||||||||||||||||||||||||
 
@@ -853,7 +877,7 @@ zFinishTrackUpdate:
 	ld	(ix+zTrack.VolEnvIndex),0			; Reset PSG flutter byte
 	ld	a,(ix+zTrack.ModulationCtrl)			; is modulation turned on?
 	or	a
-	ret	Z						; if not, quit
+	ret	P						; if not, quit
 
 zSetModulation:
 	ld	a,ixl						; copy saved modulation...
@@ -905,12 +929,44 @@ zDoModulation:
 	ret	NZ						; If so, quit
 	ld	a,(ix+zTrack.ModulationCtrl)			; is modulation turned on?
 	or	a
-	ret	Z						; If not, quit
+	ret	P						; If not, quit
+	cp	1<<7|0
+	jp	Z,.type1
+.type2:
+	dec	(ix+zTrack.ModulationWait)			; Decrement modulation wait
+	ret	NZ						; Return if nonzero
+	inc	(ix+zTrack.ModulationWait)			; Increase it back to 1 for next frame
+	ld	l,(ix+zTrack.ModulationValLow)			; l = low byte of accumulated modulation
+	ld	h,(ix+zTrack.ModulationValHigh)			; h = high byte of accumulated modulation
+	dec	(ix+zTrack.ModulationSpeed)			; Decrement modulation speed
+	jr	NZ,.mod_sustain					; Branch if nonzero
+	ld	a,(ix+zTrack.ModulationSaveSpeed)		; Get original modulation speed
+	ld	(ix+zTrack.ModulationSpeed),a			; Reset modulation speed timeout
+	ld	a,(ix+zTrack.ModulationDelta)			; Get modulation delta per step
+	ld	c,a						; c = modulation delta per step
+	rla							; Carry contains sign of delta
+	sbc	a,a						; a = 0 or -1 if carry is 0 or 1
+	ld	b,a						; bc = sign extension of delta
+	add	hl,bc						; hl += bc
+	ld	(ix+zTrack.ModulationValLow),l			; Store low byte of accumulated modulation
+	ld	(ix+zTrack.ModulationValHigh),h			; Store high byte of accumulated modulation
+.mod_sustain:
+	dec	(ix+zTrack.ModulationSteps)			; Reduce number of modulation steps
+	ret	NZ						; Return if nonzero
+.zerosteps:
+	ld	a,(ix+zTrack.ModulationSaveSteps)		; restore modulation steps
+	ld	(ix+zTrack.ModulationSteps),a
+	ld	a,(ix+zTrack.ModulationDelta)			; get modulation change per mod step
+	neg							; flip it negative
+	ld	(ix+zTrack.ModulationDelta),a			; store negated value
+	ret
+
+.type1:
 	ld	a,(ix+zTrack.ModulationWait)			; 'ww' period of time before modulation starts
 	or	a
 	jr	Z,.mod1						; if zero, go to it!
 	dec	(ix+zTrack.ModulationWait)			; Otherwise, decrement timer
-	ret							; return if decremented (does NOT return to z*UpdateTrack!!)
+	ret							; return if decremented
 .mod1:
 	dec	(ix+zTrack.ModulationSpeed)			; Decrement modulation speed counter
 	ret	NZ						; Return if not yet zero
@@ -918,16 +974,7 @@ zDoModulation:
 	ld	(ix+zTrack.ModulationSpeed),a
 	ld	a,(ix+zTrack.ModulationSteps)			; Get number of steps in modulation
 	or	a
-	jr	NZ,.mod2					; If not zero, skip to '+'
-
-	; If steps have reached zero...
-	ld	a,(ix+zTrack.ModulationSaveSteps)		; restore modulation steps
-	ld	(ix+zTrack.ModulationSteps),a
-	ld	a,(ix+zTrack.ModulationDelta)			; get modulation change per mod step
-	neg							; flip it negative
-	ld	(ix+zTrack.ModulationDelta),a			; store negated value
-	ret
-.mod2:
+	jr	Z,.zerosteps
 	dec	(ix+zTrack.ModulationSteps)			; Decrement the step
 	ld	l,(ix+zTrack.ModulationValLow)
 	ld	h,(ix+zTrack.ModulationValHigh)			; Get 16-bit modulation value
@@ -943,17 +990,6 @@ zDoModulation:
 	ld	(ix+zTrack.ModulationValHigh),h
 	ret
 ; End of function zDoModulation
-
-; ---------------------------------------------------------------------------
-; S3K driver PSG table, allows it to span notes c-0 to b-7.
-zPSGFrequencies:
-	dw	3FFh, 3FFh, 3FFh, 3FFh, 3FFh, 3FFh, 3FFh, 3FFh, 3FFh, 3F7h, 3BEh, 388h
-	dw	356h, 326h, 2F9h, 2CEh, 2A5h, 280h, 25Ch, 23Ah, 21Ah, 1FBh, 1DFh, 1C4h
-	dw	1ABh, 193h, 17Dh, 167h, 153h, 140h, 12Eh, 11Dh, 10Dh, 0FEh, 0EFh, 0E2h
-	dw	0D6h, 0C9h, 0BEh, 0B4h, 0A9h, 0A0h, 097h, 08Fh, 087h, 07Fh, 078h, 071h
-	dw	06Bh, 065h, 05Fh, 05Ah, 055h, 050h, 04Bh, 047h, 043h, 040h, 03Ch, 039h
-	dw	036h, 033h, 030h, 02Dh, 02Bh, 028h, 026h, 024h, 022h, 020h, 01Fh, 01Dh
-	dw	01Bh, 01Ah, 018h, 017h, 016h, 015h, 013h, 012h, 011h, 010h, 000h, 000h
 ; ---------------------------------------------------------------------------
 
 ;zloc_3E5
@@ -1059,6 +1095,10 @@ zPSGSetFreq:
 	jr	Z,.psg4
 	add	a,(ix+zTrack.Transpose)				; Add current channel transpose to note
 	add	a,(iy+zTrackExt.Pitch)				; Add shared pitch
+	if __revfreq
+	neg
+	add	12*7
+	endif
 	add	a,a						; Multiply note value by 2
 	add	a,zPSGFrequencies&$FF
 	ld	(.freq+2),a					; (self-modifying code)
@@ -1083,6 +1123,16 @@ zPSGSetFreq:
 	ld	a,0FFh
 	ld	(ix+zTrack.FreqHigh),a				; Frequency hight byte = FFh
 	jp	zPSGNoteOff					; Send PSG Note Off
+; S3K driver PSG table, allows it to span notes c-0 to b-7.
+zPSGFrequencies:
+	dw	3FFh, 3FFh, 3FFh, 3FFh, 3FFh, 3FFh, 3FFh, 3FFh, 3FFh, 3F7h, 3BEh, 388h
+	dw	356h, 326h, 2F9h, 2CEh, 2A5h, 280h, 25Ch, 23Ah, 21Ah, 1FBh, 1DFh, 1C4h
+	dw	1ABh, 193h, 17Dh, 167h, 153h, 140h, 12Eh, 11Dh, 10Dh, 0FEh, 0EFh, 0E2h
+	dw	0D6h, 0C9h, 0BEh, 0B4h, 0A9h, 0A0h, 097h, 08Fh, 087h, 07Fh, 078h, 071h
+	dw	06Bh, 065h, 05Fh, 05Ah, 055h, 050h, 04Bh, 047h, 043h, 040h, 03Ch, 039h
+	dw	036h, 033h, 030h, 02Dh, 02Bh, 028h, 026h, 024h, 022h, 020h, 01Fh, 01Dh
+	dw	01Bh, 01Ah, 018h, 017h, 016h, 015h, 013h, 012h, 011h, 010h, 000h, 000h
+; ---------------------------------------------------------------------------
 
 ; ||||||||||||||| S U B	R O U T	I N E |||||||||||||||||||||||||||||||||||||||
 
@@ -1247,11 +1297,6 @@ zPSGNoteOff:
 	ret
 ; End of function zPSGNoteOff
 
-; ---------------------------------------------------------------------------
-; lookup table of FM note frequencies for instruments and sound effects
-; zbyte_534:
-zFMFrequencies:
-	dw 	025Eh,0284h,02ABh,02D3h,02FEh,032Dh,035Ch,038Fh,03C5h,03FFh,043Ch,047Ch
 
 ;zloc_5F4
 zPSGSilenceAll:
@@ -1265,14 +1310,14 @@ zPSGSilenceAll:
 ; ||||||||||||||| S U B	R O U T	I N E |||||||||||||||||||||||||||||||||||||||
 ;zsub_600
 zPauseMusic:
-	ld	a,(zStopMusic)					; Get pause/unpause flag
+	ld	a,(zPauseFlag)					; Get pause/unpause flag
 	or	a
 	ret	Z
 	jp	M,.unpause					; If we are to unpause music, branch
 	dec	a
 	jr	Z,.paused
 	ld	a,1
-	ld	(zStopMusic),a
+	ld	(zPauseFlag),a
 	call	zFMSilenceAll
 	call	zPSGSilenceAll
 .paused:
@@ -1280,7 +1325,7 @@ zPauseMusic:
 	jp	zExitSequencer					; Now update the DAC
 .unpause:
 	xor	a						; a = 0
-	ld	(zStopMusic),a					; Clear pause/unpause flag
+	ld	(zPauseFlag),a					; Clear pause/unpause flag
 
 	call	zBankSwitchToMusic				; Bank switch to the music
 	ld	ix,zTracksStart					; ix = pointer to track RAM
@@ -2111,8 +2156,8 @@ zCoordFlag:
 	dw	cfWriteFMChan		; ED
 	dw	cfWriteFMI		; EE
 	dw	cfSetVoice		; EF
-	dw	cfModulation		; F0
-	dw	cfEnableModulation	; F1
+	dw	cfModulationType1	; F0
+	dw	cfSetModulation		; F1
 	dw	cfStopTrack		; F2
 	dw	cfSetPSGNoise		; F3
 	dw	cfDisableModulation	; F4
@@ -2123,6 +2168,7 @@ zCoordFlag:
 	dw	cfJumpReturn		; F9
 	dw	cfResetSpindashRev	; FA
 	dw	cfSetRepeatAmount	; FB
+	dw	cfModulationType2	; FC
 ; ---------------------------------------------------------------------------
 
 ; (via Saxman's doc): panning, AMS, FMS  
@@ -2370,14 +2416,20 @@ zSetFMTLs:
 	ret
 ; ---------------------------------------------------------------------------
 
-; (via Saxman's doc): F0wwxxyyzz - modulation 
-; o	ww - Wait for ww period of time before modulation starts 
-; o	xx - Modulation Speed 
-; o	yy - Modulation change per Mod. Step 
-; o	zz - Number of steps in modulation 
-;zloc_EB0
-cfModulation:
-	call	cfEnableModulation
+cfModulationType1:
+	ld	a,1<<7|0
+	call	zCopyModulation
+	push	hl
+	call	zSetModulation
+	pop	hl
+	ret
+
+cfModulationType2:
+	ld	a,1<<7|1
+
+zCopyModulation:
+	dec	hl						; Start transfer from the first parameter
+	ld	(ix+zTrack.ModulationCtrl),a
 	ld	a,ixl						; copy modulation to buffer
 	add	a,zTrack.ModulationSaveWait
 	ld	e,a
@@ -2386,17 +2438,14 @@ cfModulation:
 	ld	d,a
 	ld	bc,4
 	ldir
-	push	hl
-	call	zSetModulation
-	pop	hl
 	ret
-; ---------------------------------------------------------------------------
 
-; (via Saxman's doc): Turn on modulation 
-;zloc_EDE
-cfEnableModulation:
-	dec	hl
-	ld	(ix+zTrack.ModulationCtrl),1<<7			; turn modulation on
+cfDisableModulation:
+	dec	hl						; No parameters used
+	xor	a
+
+cfSetModulation:
+	ld	(ix+zTrack.ModulationCtrl),a
 	ret
 ; ---------------------------------------------------------------------------
 
@@ -2592,14 +2641,6 @@ cfSetPSGNoise:
 	ret	NZ
 	ld	a,0FFh						; mute noise
 	ld	(zPSG),a
-	ret
-; ---------------------------------------------------------------------------
-
-; (via Saxman's doc): Turn off modulation 
-;zloc_F88
-cfDisableModulation:
-	dec	hl						; No parameters used, must back up a byte
-	ld	(ix+zTrack.ModulationCtrl),0			; turn modulation off
 	ret
 ; ---------------------------------------------------------------------------
 

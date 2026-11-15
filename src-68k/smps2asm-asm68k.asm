@@ -305,7 +305,7 @@ smpsHeaderFM macro loc,pitch,vol
 ; Header - Set up PSG Channel
 smpsHeaderPSG macro loc,pitch,vol,mod,voice
 	makeSequencePointer \loc
-	if SourceDriver<3
+	if SourceDriver<3	; some songs erroneously set mod even though the driver lacked mod
 	dc.b	(\pitch\+psgdelta)&$FF,\vol,0,\voice
 	else
 	dc.b	(\pitch\+psgdelta)&$FF,\vol,\mod,\voice
@@ -419,15 +419,16 @@ smpsAlterNote macro val
 	endm
 smpsModSet macro wait,speed,change,step
 	if SourceDriver>=3
-	dc.b	$F0,\wait\-1,\speed,\change,((((\step\=0)&1)*256)+\step\)/((((\speed\=0)&1)*256)+\speed\)-1
-	elseif SourceDriver=1
-	dc.b	$F0,\wait\+1,\speed,\change,\step
+	dc.b	$FC,\wait,\speed,\change,\step
 	else
-	dc.b	$F0,\wait,\speed,\change,\step
+	dc.b	$F0,(\wait\)+((SourceDriver=1)&1),\speed,\change,\step
 	endif
 	endm
+smpsModChange macro val
+	dc.b	$F1,\val
+	endm
 smpsModOn macro
-	dc.b	$F1
+	dc.b	$F1,(1<<7)|((SourceDriver>=3)&1)
 	endm
 smpsModOff macro
 	dc.b	$F4
@@ -538,9 +539,6 @@ smpsFMIICommand macro reg,val
 
 smpsModChange2 macro fmmod,psgmod
 	inform 3,"smpsModChange2 isn't supported"
-	endm
-smpsModChange macro val
-	inform 3,"smpsModChange isn't supported"
 	endm
 
 smpsContinuousLoop macro loc

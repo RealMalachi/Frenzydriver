@@ -59,7 +59,6 @@ SmpsVol:
 SmpsSpeed:
 	SMPS_stopwaitZ80
 	move.b	d0,smps_z80ram+smps_musicspeed
-	move.b	#1,smps_z80ram+smps_musicspeedupd
 	SMPS_startZ80
 	rts
 

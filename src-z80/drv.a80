@@ -48,6 +48,7 @@ ModulationCtrl:		defb	; 0 means no modulation, bit 7 set means use modalgo (80h 
 VolEnvID:		defb	; 
 
 VolEnvIndex:		defb	; 
+VolEnvValue:		defb
 AMSFMSPan:		defb	; Panning / AMS / FMS settings
 StackPointer:		defb	; "Gosub" stack position offset (starts at 2Ah, i.e. end of track, and each jump decrements by 2)
 DurationTimeout:	defb	; current duration timeout, counting down to zero
@@ -86,26 +87,28 @@ len:
 	ENDS
 
 	STRUCT zTrackExt
-Pitch			defs 1
-Volume			defs 1
-Speed			defs 1
-SpeedUpd		defs 1
+Pitch			defb
+Volume			defb
+Speed			defb
+SpeedUpd		defb
+Flags			defb
 	ENDS
+bgmflag_palslow		equ 7
+bgmflag_nospeed		equ 6
 
 	STRUCT zVar
 DACEnabled:		defb
 MusicBankNumber:	defb
-IsPalFlag:		defb		; slow song
-
 TempoTimeout:		defb
 CurrentTempo:		defb		; BGM-specific tempo delay
-
-FadeOutCounter:		defb
-FadeOutDelay:		defb
-FadeInFlag:		defb
-FadeInDelay:		defb
-FadeInCounter:		defb
 len:
+	ENDS
+
+	STRUCT zFader
+Flag:		defb
+Delay:		defb
+Counter:	defb
+Volume:		defb
 	ENDS
 
 zRamStart:
@@ -114,9 +117,11 @@ zStack:
 
 zSequenceRate:		defs 1
 zCommunication:		defs 1
+zQueueSlotStart:
 zQueueSlot1:		defs 1
 zQueueSlot2:		defs 1
 zQueueSlot3:		defs 1
+zQueueSlotEnd:
 
 zDoSFXFlag:		defs 1		; Flag to indicate we're updating SFX (and thus use custom voice table); set to FFh while doing SFX, 0 when not.
 zDACUpdating:		defs 1		; Set to FFh while DAC is updating, then back to 00h
@@ -124,7 +129,6 @@ zPcmQueue:		defs 1
 zPcmBank:		defs 1
 zPcmSfxFlag:		defs 1
 zLastNoise:		defs 1
-zDoubleUpdate:		defs 1
 zPalModeByte:		defs 1
 
 zClearRange:
@@ -133,6 +137,7 @@ zSpindashTimer:		defs 1
 zSpindashIndex:		defs 1
 zPauseFlag:		defs 1		; 0 = playing, 1 = paused, 7Fh = pausing, 80h = resuming
 zSFXPriorityVal:	defs 1
+zFaderRam:		zFader
 
 zMusClearRange:
 zPALUpdTick:		defs 1		; This counts from 0 to 5 to periodically "double update" for PAL systems (basically every 6 frames you need to update twice to keep up)
@@ -191,7 +196,6 @@ zRamEnd:
 	valfor68k smps_musicpitch	,zSongExtra.Pitch
 	valfor68k smps_musicvol		,zSongExtra.Volume
 	valfor68k smps_musicspeed	,zSongExtra.Speed
-	valfor68k smps_musicspeedupd	,zSongExtra.SpeedUpd
 
 		STRUCT zData
 bgmplaylist	defw
@@ -444,25 +448,20 @@ zUpdateSequencer:
 	rst	zWriteFMI
 	endif
 
-	ld	a,(zDoubleUpdate)
-	xor	1
-	ld	(zDoubleUpdate),a
-
-	call	zPauseMusic
-	ld	ix,zAbsVar
-	ld	a,(zAbsVar.FadeOutCounter)
+	ld	a,(zPauseFlag)					; Get pause/unpause flag
 	or	a
-	call	NZ,zUpdateFadeout				; ix = zAbsVar
-	ld	a,(zAbsVar.FadeInFlag)
+	call	NZ,zPauseMusic
+	ld	a,(zFaderRam.Flag)
 	or	a
-	call	NZ,zUpdateFadeIn				; ix = zAbsVar
-	ld	a,(zSpindashTimer)
+	call	NZ,zUpdateFade
+	ld	hl,zSpindashTimer
+	ld	a,(hl)
 	or	a
 	jr	Z,.spindash					; if the spindash counter is already 0, branch
-	dec	a						; decrease the spindash sound playing counter
-	ld	(zSpindashTimer),a
+	dec	(hl)						; decrease the spindash sound playing counter
 .spindash:
 	call	zCycleQueue
+
 	call	zUpdateMusic
 zSkipMusicUpdate:
 	call	zUpdateSound
@@ -499,39 +498,30 @@ zExitSequencer:
 
 ; ||||||||||||||| S U B	R O U T	I N E |||||||||||||||||||||||||||||||||||||||
 
-; Updates all tracks; queues notes and durations!
-
-;zsub_110
+zUpdateMusic_palslowupd:
+	ld	(hl),5
+	ret
 zUpdateMusic:
 	ld	iy,zSongExtra
-	ld	a,(zDoubleUpdate)
+	; Some songs want to play slower on PAL
+	bit	bgmflag_palslow,(iy+zTrackExt.Flags)
+	jr	Z,.nosloweuropeans
+	ld	a,(zPalModeByte)				; if console is NTSC, clear pal slow flag
 	or	a
-	jr	Z,.run
-	ld	a,(zPlaying1upFlag)
-	or	a
-	ret	NZ
-	ld	a,(iy+zTrackExt.Speed)
-	or	a
-	ret	Z
-	dec	(iy+zTrackExt.SpeedUpd)
-	ret	NZ
+	jr	NZ,.nosloweuropeans
+	ld	hl,zPALUpdTick					; Tick down double update timer
+	dec	(hl)
+	jr	Z,zUpdateMusic_palslowupd
+.nosloweuropeans:
+	; Double update control
+	ld	a,80h						; 60tps in 120tps container by default
+	bit	bgmflag_nospeed,(iy+zTrackExt.Flags)
+	jr	NZ,.nospeed
+	sub	(iy+zTrackExt.Speed)
+.nospeed:
+	add	(iy+zTrackExt.SpeedUpd)
 	ld	(iy+zTrackExt.SpeedUpd),a
-.run:
-	; If the system is PAL and the song doesn't opt out, update the song at 1.2x speed
-;	ld	hl,zPalModeByte					; Get zPalModeByte
-;	ld	a,(zAbsVar.IsPalFlag)				; Get IsPalFlag
-;	and	(hl)						; 'And' them together
-;	jr	Z,.nah						; If it comes out zero, do nothing
-;	ld	hl,zPALUpdTick					; Tick down double update timer
-;	dec	(hl)
-;	jr	NZ,.nah
-;	ld	(hl),5
-;	ret
-;.nah:
-	call	zBankSwitchToMusic
-	xor	a						; Clear 'a'
-	ld	(zDoSFXFlag),a					; Not updating SFX (updating music)
-.update:
+	ret	C
 	; S3K tempo algorithm
 	; Tempo works as divisions of the 60Hz clock
 	; (there is a separate fix supplied for PAL that "kind of" keeps it on track)
@@ -549,9 +539,13 @@ zUpdateMusic:
 	add	hl,de						; Next track...
 	djnz	.loop
 .exit:
+	call	zBankSwitchToMusic
 	ld	ix,zTracksStart
+	xor	a						; Clear 'a'
+	ld	(zDoSFXFlag),a					; Not updating SFX (updating music)
 
-	ld	a,0FFh
+	dec	a
+;	ld	a,0FFh
 	ld	(zDACUpdating),a
 
 	ld	b,(zSongFM1-zSongDAC)/zTrack.len
@@ -590,13 +584,14 @@ zUpdateMusic:
 	ret
 ; ---------------------------------------------------------------------------
 zUpdateSound:
-	ld	a,(zDoubleUpdate)
-	or	a
-	ret	NZ
+	ld	iy,zSFX_Extra
+	ld	a,(iy+zTrackExt.SpeedUpd)
+	add	80h
+	ld	(iy+zTrackExt.SpeedUpd),a
+	ret	C
 	call	zBankSwitchToSFX				; Bank switch to sound effects
 	ld	a,1						; Updating SFX
 	ld	(zDoSFXFlag),a
-	ld	iy,zSFX_Extra
 	ld	ix,zTracksSFXStart
 
 	ld	b,(zSFX_PSG1-zSFX_FM3)/zTrack.len
@@ -1195,13 +1190,12 @@ zUpdateVolEnv:
 	ld	a,(ix+zTrack.VolEnvID)				; Get current PSG tone
 	or	a						; Test if it's zero
 	ret	Z						; If it is, return!
-zDoVolume:
-	ld	b,(ix+zTrack.Volume)				; Channel volume -> 'b'
 
+zDoVolume:
 zUpdateVolEnv_cont:
-	ld	a,(ix+zTrack.VolEnvID)				; Current PSG tone -> 'a'
-	or	a						; Test it
-	jr	Z,zUpdateVolume					; If tone is zero, jump to zUpdateVolume
+	ld	a,(ix+zTrack.VolEnvID)
+	or	a
+	jr	Z,.clearvolenv
 
 	ld	de,(zDataTable.volenv)				; hl points to zPSG_FlutterTbl table
 	dec	a						; a--
@@ -1224,9 +1218,9 @@ zUpdateVolEnv_cont:
 	cp	80h						; Check if it's 80h (terminator to the "flutter" list)
 	jr	Z,zVolEnvHold					; If it is, then jump to zVolEnvHold (which just keeps at this flutter value, i.e. no more changes in volume)
 	inc	(ix+zTrack.VolEnvIndex)				; Increment index
-	call	zAddCapVolume
+.clearvolenv:
+	ld	(ix+zTrack.VolEnvValue),a
 
-; b = volume
 zUpdateVolume:
 	ld	a,(ix+zTrack.PlaybackControl)			; Get playback control byte
 	and	1<<playback_resting|1<<playback_override
@@ -1242,7 +1236,11 @@ zUpdateVolume:
 	or	a
 	ret	Z
 .attack:
-	ld	a,(iy+zTrackExt.Volume)
+	ld	b,(ix+zTrack.Volume)
+	ld	a,(zFaderRam.Volume)				; add fade-control and volenv at the same time
+	add	a,(ix+zTrack.VolEnvValue)
+	call	zAddCapVolume
+	ld	a,(iy+zTrackExt.Volume)				; add user-controlled one separately, because I don't trust you
 	call	zAddCapVolume
 	ld	c,(ix+zTrack.VoiceControl)
 	bit	7,c						; branch if it's an FM track
@@ -1274,7 +1272,7 @@ zAddCapVolume:
 .fm:	add	a,b
 	ld	b,a
 	ret	NC
-	ld	b,0FFh
+	ld	b,07Fh
 	ret
 ; End of function zDoVolume
 
@@ -1310,9 +1308,9 @@ zPSGSilenceAll:
 ; ||||||||||||||| S U B	R O U T	I N E |||||||||||||||||||||||||||||||||||||||
 ;zsub_600
 zPauseMusic:
-	ld	a,(zPauseFlag)					; Get pause/unpause flag
-	or	a
-	ret	Z
+;	ld	a,(zPauseFlag)					; Get pause/unpause flag
+;	or	a
+;	ret	Z
 	jp	M,.unpause					; If we are to unpause music, branch
 	dec	a
 	jr	Z,.paused
@@ -1355,16 +1353,16 @@ zPauseMusic:
 ; ||||||||||||||| S U B	R O U T	I N E |||||||||||||||||||||||||||||||||||||||
 ;zsub_674
 zCycleQueue:
-	ld	hl,zQueueSlot1					; Get address of next sound
-	rept (zQueueSlot3-zQueueSlot1),i
-	ld	a,(hl)
-	or	a
-	if (i+1)<(zQueueSlot3-zQueueSlot1)
-	jr	NZ,.queue
-	inc	hl
-	else
-	ret	Z
-	endif
+	ld	hl,zQueueSlotStart				; Get address of next sound
+	xor	a
+	rept (zQueueSlotEnd-zQueueSlotStart),i
+	or	(hl)
+		if (i+1)<(zQueueSlotEnd-zQueueSlotStart)
+		jr	NZ,.queue
+		inc	hl
+		else
+		ret	Z
+		endif
 	endr
 .queue:
 	ld	(hl),0						; Clear the slot
@@ -1407,6 +1405,7 @@ zCommandIndex:
 	valfor68k  CmdID__First,rwaaauh
 	cmdinclude zPlaySegaChant	,cmdid_Sega
 	cmdinclude zStopSoundEffects	,cmdid_StopSFX
+	cmdinclude zFadeInMusic		,cmdid_FadeIn
 	cmdinclude zFadeOutMusic	,cmdid_FadeOut
 	cmdinclude zStopSoundAndMusic	,cmdid_Stop
 	valfor68k  CmdID__End,rwaaauh
@@ -1450,9 +1449,9 @@ zPlayMusic:
 	jr	zBGMLoad					; Now load 1-up BGM
 .not1up:
 	xor	a
-	ld	(zPlaying1upFlag),a				; clear 1-up is playing flag (it isn't)
-	ld	(zAbsVar.FadeInCounter),a			; clear fade-in frame count
-	ld	(zAbsVar.FadeOutCounter),a			; clear fade-out frame count
+	ld	(zPlaying1upFlag),a				; clear 1-up is playing flag
+	ld	(zFaderRam.Flag),a				; disable fade
+	ld	(zFaderRam.Volume),a				; clear fade volume
 
 ;zloc_78E
 zBGMLoad:
@@ -1467,20 +1466,17 @@ zBGMLoad:
 	rept 4
 	add	hl,de
 	endr
-	ld	a,(hl)						; Get "fixed" index
-	add	a,a						; Adding a+a causes a possible overflow and a multiplication by 2
-;	ld	c,a						; Save result for other commands in c
-	ccf							; Invert carry flag from overflow
-	sbc	a,a						; ...so that this sets a to FFh if bit 7 of original a was clear (allow PAL double-update), zero otherwise (do not allow PAL double-update)
-	ld	(zAbsVar.IsPalFlag),a
+
+	ld	a,(hl)						; Get flags
+	ld	(zSongExtra.Flags),a
 	inc	hl
 
-	ld	a,(hl)						; Get "fixed" index
+	ld	a,(hl)						; Get bgm rom bank
 	ld	(zAbsVar.MusicBankNumber),a			; Store this (use to enable alternate bank)
 	call	zBankSwitch
 	inc	hl
 
-	ld	e,(hl)
+	ld	e,(hl)						; Get bgm header pointer
 	inc	hl
 	ld	d,(hl)
 
@@ -1497,6 +1493,8 @@ zBGMLoad:
 	ld	(zAbsVar.TempoTimeout),a			; Tempo accumulator for TempoWait
 	ld	a,5
 	ld	(zPALUpdTick),a					; reset PAL update tick to 5 (update immediately)
+	xor	a
+	ld	(zSongExtra.SpeedUpd),a
 
 	push	ix
 	pop	hl						; hl = ix (BGM's starting address)
@@ -1641,7 +1639,7 @@ zPlaySound:
 	ld	c,a						; Store sound index -> 'c'
 	ld	a,(zPlaying1upFlag)				; don't play SFXs if the 1upflag or fadeinflag is enabled
 	ld	b,a
-	ld	a,(zAbsVar.FadeInFlag)
+	ld	a,(zFaderRam.Flag)
 	or	b
 	jr	NZ,zPlaySound_KillSFXPrio			; If either is set, SFX cannot be played!!
 	call	zBankSwitchToSFX				; Switch to SFX banks
@@ -1825,85 +1823,87 @@ zStopSoundEffects:
 ; End of function zStopSoundEffects
 
 ; ---------------------------------------------------------------------------
-; zloc_ABF:
+
 zFadeOutMusic:
-	ld	a,3
-	ld	(zAbsVar.FadeOutDelay),a			; Set delay ticker to 3
-	ld	a,28h
-	ld	(zAbsVar.FadeOutCounter),a			; Set total frames to decrease volume over
-	xor	a
-	ld	(zSongExtra.Speed),a				; No speed shoe tempo?
-	ld	(zSongExtra.SpeedUpd),a				; No speed shoe tempo?
-;	xor	a
-	ld	(zSongDAC.PlaybackControl),a			; Stop DAC track (can't fade it)
+;	xor	a						; disable speedup... I guess.
+;	ld	(zSongExtra.Speed),a
+;	ld	(zSongExtra.SpeedUpd),a
+	ld	bc,1<<8|00h					; flag 1 vol 00h
+	jr	zFadeMusicCommon
+
+zFadeInMusic:
+	ld	bc,2<<8|28h					; flag 2 vol 28h
+
+zFadeMusicCommon:
+	; TODO: hl?
+	ld	ix,zFaderRam
+	ld	(ix+zFader.Flag),b
+	ld	(ix+zFader.Delay),1
+	ld	(ix+zFader.Volume),c
+	ld	(ix+zFader.Counter),28h
+
+	ld	a,(zSongDAC.PlaybackControl)			; Stop DAC playback (lacks volume control)
+	or	1<<playback_override
+	ld	(zSongDAC.PlaybackControl),a
 	ret
 
 ; ||||||||||||||| S U B	R O U T	I N E |||||||||||||||||||||||||||||||||||||||
 
-
-;zsub_AD1
-zUpdateFadeout:
-	ld	a,(zAbsVar.FadeOutDelay)			; Get current tick count before next volume decrease
-	or	a
-	jr	Z,.delay					; If not yet zero...
-	dec	(ix+zVar.FadeOutDelay)				; Just decrement it
+zUpdateFade:
+;	ld	a,(zFaderRam.Flag)
+;	or	a
+;	ret	Z						; 0, none
+	ld	ix,zFaderRam
+	dec	(ix+zFader.Delay)
+	ret	NZ
+	dec	a						; 1, fadeout
+	jr	NZ,.fadein					; 2+, fadein
+.fadeout:
+	ld	(ix+zFader.Delay),6
+	dec	(ix+zFader.Counter)
+	jp	Z,zClearTrackPlaybackMem
+	inc	(ix+zFader.Volume)
+	jp	P,zUpdateAllVolumes
+	dec	(ix+zFader.Volume)
 	ret
-.delay:
-	dec	(ix+zVar.FadeOutCounter)			; Otherwise, decrement fadeout!
-	jp	Z,zClearTrackPlaybackMem			; If it hits zero, clear everything!
-	ld	(ix+zVar.FadeOutDelay),3			; Otherwise, reload tick count with 3
+.fadein:
+	ld	(ix+zFader.Delay),4
+	dec	(ix+zFader.Volume)
+	jr	NZ,.fadeinnotdone
+	xor	a						; Done fading-in
+	ld	(zFaderRam.Flag),a
+	ld	a,(zSongDAC.PlaybackControl)			; Reenable DAC playback
+	and	~(1<<playback_override)
+	ld	(zSongDAC.PlaybackControl),a
+.fadeinnotdone:
 
-	push	ix
-
+zUpdateAllVolumes:
 	ld	iy,zSongExtra
-	ld	ix,zSongFM1					; 'ix' points to first FM music track
-	ld	b,(zSongPSG1-zSongFM1)/zTrack.len		; 6 FM tracks to follow...
+	ld	ix,zSongFM1
+	ld	b,(zSongPSG1-zSongFM1)/zTrack.len
 .fmloop:
-	bit	playback_playing,(ix+zTrack.PlaybackControl)	; Is this track playing?
-	jr	Z,.fmnop					; If not, do nothing
-	inc	(ix+zTrack.Volume)				; increment channel volume (remember -- higher is quieter!)
-	jp	P,.fmmaxvol					; don't let it overflow
-	res	playback_playing,(ix+zTrack.PlaybackControl)	; otherwise, stop playing this track
-	jr	.fmnop						; just loop
-.fmmaxvol:
+	bit	playback_playing,(ix+zTrack.PlaybackControl)
+	jr	Z,.fmnop
 	push	bc
-	ld	b,(ix+zTrack.Volume)				; Channel volume -> 'b'
-	ld	a,(ix+zTrack.VolEnvID)
-	or	a						; Is this track using volume envelope 0 (no envelope)?
-	call	Z,zUpdateVolume					; If so, update volume (this code is only run on envelope 1+, so we need to do it here for envelope 0)
+	call	zUpdateVolume
 	pop	bc
 .fmnop:
 	ld	de,zTrack.len	
-	add	ix,de						; Next track
-	djnz	.fmloop						; Keep going for all FM tracks...
+	add	ix,de
+	djnz	.fmloop
 
-
-	ld	b,(zTracksEnd-zSongPSG1)/zTrack.len		; 3 PSG tracks to follow...
+	ld	b,(zTracksEnd-zSongPSG1)/zTrack.len
 .psgloop:
-	bit	playback_playing,(ix+zTrack.PlaybackControl)	; Is this track playing?
-	jr	Z,.psgnop					; If not, do nothing
-	inc	(ix+zTrack.Volume)				; increment channel volume (remember -- higher is quieter!)
-	ld	a,10h
-	cp	(ix+zTrack.Volume)				; don't let volume go over 0Fh on PSG tracks!
-	jp	NC,.psgmaxvol
-	res	playback_playing,(ix+zTrack.PlaybackControl)	; Otherwise, stop playing this track
-	jr	.psgnop
-.psgmaxvol:
+	bit	playback_playing,(ix+zTrack.PlaybackControl)
+	jr	Z,.psgnop
 	push	bc
-	ld	b,(ix+zTrack.Volume)				; Channel volume -> 'b'
-	ld	a,(ix+zTrack.VolEnvID)
-	or	a						; Is this track using volume envelope 0 (no envelope)?
-	call	Z,zUpdateVolume					; If so, update volume (this code is only run on envelope 1+, so we need to do it here for envelope 0)
+	call	zUpdateVolume
 	pop	bc
 .psgnop:
 	ld	de,zTrack.len
-	add	ix,de						; Next track
-	djnz	.psgloop					; Keep going for all PSG tracks...
-
-	pop	ix
+	add	ix,de
+	djnz	.psgloop
 	ret
-; End of function zUpdateFadeout
-
 
 ; ||||||||||||||| S U B	R O U T	I N E |||||||||||||||||||||||||||||||||||||||
 
@@ -1963,18 +1963,13 @@ zInitMusicPlayback:
 	; specific to the music tracks...
 
 	; Save some queues/flags:
-	ld	ix,zAbsVar
-	ld	b,(ix+zVar.FadeInCounter)
-	push	bc
 	; The following clears all playback memory and non-SFX tracks
+	ld	ix,zAbsVar
 	ld	hl,zMusClearRange
 	ld	de,zMusClearRange+1
 	ld	(hl),0
 	ld	bc,(zTracksEnd-zMusClearRange)-1
 	ldir
-	; Restore those queue/flags:
-	pop	bc
-	ld	(ix+zVar.FadeInCounter),b
 
 	; If a music file's header doesn't define each and every channel, they
 	; won't be silenced by zloc_8FB, because their tracks aren't properly
@@ -1996,71 +1991,7 @@ zMusicInitBytes:
 	db  0,1,2		; FMI
 	db  4,5,6		; FMII
 	db  080h,0A0h,0C0h,0E0h	; PSG
-; End of function zInitMusicPlayback
-
-; ||||||||||||||| S U B	R O U T	I N E |||||||||||||||||||||||||||||||||||||||
-
-
-;zsub_BE8
-zUpdateFadeIn:
-	ld	a,(zAbsVar.FadeInDelay)				; Get current tick count before next volume increase
-	or	a
-	jr	Z,.delay					; If not yet zero...
-	dec	(ix+zVar.FadeInDelay)				; Just decrement it
-	ret
-.delay:
-	ld	a,(zAbsVar.FadeInCounter)			; Get current fade out frame count
-	or	a
-	jr	NZ,.counter					; If fadeout hasn't reached zero yet, skip this
-	ld	a,(zSongDAC.PlaybackControl)			; Get DAC's playback control byte
-	and	~(1<<playback_override)				; Clear "SFX is overriding" bit
-	ld	(zSongDAC.PlaybackControl),a			; Set that
-	xor	a
-	ld	(zAbsVar.FadeInFlag),a				; Done fading-in, SFX can play now 
-	ret
-.counter:
-	dec	(ix+zVar.FadeInCounter)				; Otherwise, we decrement fadein!
-	ld	(ix+zVar.FadeInDelay),2				; Otherwise, reload tick count with 2 (little faster than fadeout)
-	push	ix
-
-	ld	iy,zSongExtra
-	ld	ix,zSongFM1					; 'ix' points to first FM music track
-	ld	b,(zSongPSG1-zSongFM1)/zTrack.len		; 6 FM tracks to follow...
-.fmloop:
-	bit	playback_playing,(ix+zTrack.PlaybackControl)	; Is this track playing?
-	jr	Z,.fmnop					; If not, do nothing
-	dec	(ix+zTrack.Volume)				; decrement channel volume (remember -- lower is louder!)
-	push	bc
-	ld	b,(ix+zTrack.Volume)				; Channel volume -> 'b'
-	ld	a,(ix+zTrack.VolEnvID)
-	or	a						; Is this track using volume envelope 0 (no envelope)?
-	call	Z,zUpdateVolume					; If so, update volume (this code is only run on envelope 1+, so we need to do it here for envelope 0)
-	pop	bc
-.fmnop
-	ld	de,zTrack.len
-	add	ix,de						; Next track
-	djnz	.fmloop						; Keep going for all FM tracks...
-
-	ld	b,(zTracksEnd-zSongPSG1)/zTrack.len		; 3 PSG tracks to follow...
-.psgloop:
-	bit	playback_playing,(ix+zTrack.PlaybackControl)	; Is this track playing?
-	jr	Z,.psgnop					; If not, do nothing
-	dec	(ix+zTrack.Volume)				; decrement channel volume (remember -- lower is louder!)
-	push	bc
-	ld	b,(ix+zTrack.Volume)				; Channel volume -> 'b'
-	ld	a,(ix+zTrack.VolEnvID)
-	or	a						; Is this track using volume envelope 0 (no envelope)?
-	call	Z,zUpdateVolume					; If so, update volume (this code is only run on envelope 1+, so we need to do it here for envelope 0)
-	pop	bc
-.psgnop:
-	ld	de,zTrack.len
-	add	ix,de						; Next track
-	djnz	.psgloop					; Keep going for all PSG tracks...
-
-	pop	ix
-	ret
-; End of function zUpdateFadeIn
-
+; End of function zInitMusicPlaybacks
 
 
 ; ||||||||||||||| S U B	R O U T	I N E |||||||||||||||||||||||||||||||||||||||
@@ -2551,52 +2482,7 @@ cfFadeInToPrevious:
 	ld	bc,zTracksSaveEnd-zTracksSaveStart		; for this many bytes
 	ldir							; Go!
 
-	call	zBankSwitchToMusic
-	ld	a,(zSongDAC.PlaybackControl)			; Get DAC's playback bit
-	or	1<<playback_override
-	ld	(zSongDAC.PlaybackControl),a			; Set "SFX is overriding" on it (not normal, but will work for this purpose)
-	ld	a,(zAbsVar.FadeInCounter)			; Get current count of many frames to continue bringing volume up
-	ld	c,a						; 
-	ld	a,28h						; 
-	sub	c						; a = 28h - c (don't overlap fade-ins?)
-	ld	c,a						; 'a' -> 'c'
-	ld	b,(zSongPSG1-zSongFM1)/zTrack.len		; 6 FM tracks to follow...
-	ld	ix,zSongFM1					; 'ix' points to first FM music track
-.fmloop:
-	bit	playback_playing,(ix+zTrack.PlaybackControl)	; Is this track playing?
-	jr	Z,.fmnop					; If not, do nothing
-	set	playback_resting,(ix+zTrack.PlaybackControl)	; Mark track at rest
-	ld	a,(ix+zTrack.Volume)				; Get channel volume
-	add	a,c						; Apply current fade value
-	ld	(ix+zTrack.Volume),a				; Store it back
-	bit	playback_override,(ix+zTrack.PlaybackControl)	; Is track being overridden by SFX?
-	jr	NZ,.fmnop					; If so, skip next part
-	push	bc
-	call	zSetVoice					; Update voice (and set volume)
-	pop	bc
-.fmnop:
-	ld	de,zTrack.len
-	add	ix,de						; Next track
-	djnz	.fmloop						; Keep going for all FM tracks...
-
-	ld	b,(zTracksEnd-zSongPSG1)/zTrack.len		; 3 PSG tracks to follow...
-.psgloop:
-	bit	playback_playing,(ix+zTrack.PlaybackControl)	; Is this track playing?
-	jr	Z,.psgnop					; If not, do nothing
-	set	playback_resting,(ix+zTrack.PlaybackControl)	; Set track at rest
-	call	zPSGNoteOff					; Shut off PSG
-	ld	a,(ix+zTrack.Volume)				; Get channel volume
-	add	a,c						; Apply current fade value
-	ld	(ix+zTrack.Volume),a				; Store it back
-.psgnop:
-	ld	de,zTrack.len
-	add	ix,de						; Next track
-	djnz	.psgloop					; Keep going for all FM tracks...
-
-	ld	a,80h
-	ld	(zAbsVar.FadeInFlag),a				; Stop any SFX during fade-in
-	ld	a,28h
-	ld	(zAbsVar.FadeInCounter),a			; Fade in for 28h frames
+	call	zFadeInMusic
 	xor	a
 	ld	(zPlaying1upFlag),a				; Set to zero; 1-up ain't playin' no more
 	ld	a,(zAbsVar.DACEnabled)				; DAC not yet enabled...
@@ -2767,7 +2653,7 @@ cfSpindashRev:
 	add	a,(ix+zTrack.Transpose)				; Add current channels pitch
 	ld	(ix+zTrack.Transpose),a				; Store it into channels pitch
 ; just setting the timer
-	ld	a,42
+	ld	a,120						; one second (120tps)
 	ld	(zSpindashTimer),a
 	ret
 cfResetSpindashRev:
